@@ -1,4 +1,5 @@
 extends Node3D
+const Paths := preload("res://scripts/paths.gd")
 ## Close-up detail, built around the player as they move and dropped again behind them:
 ## dressed buildings (scripts/facades.gd) in place of the plain blocks, and real road surfaces
 ## with markings, kerbs, sidewalks and zebra crossings on top of the painted terrain.
@@ -51,7 +52,7 @@ func add_building(rec: Dictionary, key: Vector2i) -> void:
 
 
 func _load_roads() -> void:
-	var data := FileAccess.get_file_as_bytes("res://world/roads.bin").to_float32_array()
+	var data := FileAccess.get_file_as_bytes(Paths.world + "roads.bin").to_float32_array()
 	var i := 0
 	while i + 4 <= data.size():
 		var n := int(data[i])
@@ -95,7 +96,7 @@ func _load_roads() -> void:
 
 ## The melted road and sidewalk surfaces, cut into triangles per cell by tools/build_map.py.
 func _load_paved() -> void:
-	var data := FileAccess.get_file_as_bytes("res://world/paved.bin").to_float32_array()
+	var data := FileAccess.get_file_as_bytes(Paths.world + "paved.bin").to_float32_array()
 	var i := 0
 	while i + 6 <= data.size():
 		var key := Vector2i(int(data[i]), int(data[i + 1]))

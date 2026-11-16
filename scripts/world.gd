@@ -2,7 +2,8 @@ extends Node3D
 ## Builds Molde from the files in res://world/ (made by tools/build_map.py):
 ## terrain, sea, buildings, trees and street names.
 
-const DIR := "res://world/"
+const Paths := preload("res://scripts/paths.gd")
+var DIR: String = Paths.world      # res://world/, or user://world/ in a browser
 const FCELL := 100            # the 1 m terrain is handled in cells this many metres across
 const FN := 103               # heights along the side of a cell: 101, plus one more all round
 const TR := 3                 # 1 m terrain cells kept around the player, in each direction

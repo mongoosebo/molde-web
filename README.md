@@ -5,14 +5,22 @@ Molde, Norway. Built with Godot 4 and exported for the web (WebGL 2); it also st
 
 ## Play in a browser
 
+Online: https://mongoosebo.github.io/molde-web/
+
+Every push to `main` exports the game and publishes it there (`.github/workflows/pages.yml`; Settings -> Pages ->
+Source must be "GitHub Actions"). The map is not in the game's pack: the page downloads the files in `world/`
+(about 265 MB) while it loads, and the browser keeps them, so later visits start quickly and only fetch files
+that have changed (`scripts/fetch.gd`, list made by `tools/web_site.py`).
+
+To try it on your own machine:
+
     ./web.sh
 
-exports the game to `build/web/` and serves it on http://localhost:8060. It needs Godot's export templates
-(Editor -> Manage Export Templates -> Download). You can also export from the editor: Project -> Export -> Web.
+exports to `build/web/` and serves it on http://localhost:8060. It needs Godot's export templates
+(Editor -> Manage Export Templates -> Download).
 
 In the browser the game uses Godot's Compatibility renderer (WebGL 2) instead of Forward+, so there is no
-ambient occlusion and the light is a little flatter; the desktop game is unchanged. Everything in `world/`
-goes into the download, about 300 MB, which the browser loads before the game starts. The export is
+ambient occlusion and the light is a little flatter; the desktop game is unchanged. The export is
 single-threaded, so any plain web server works (no special headers). Click once to take the mouse.
 The helicopter goes down with C as well as Ctrl, since Ctrl+W closes a browser tab, and notes
 (right mouse button) are off in the browser.

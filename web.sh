@@ -10,6 +10,7 @@ if [ "$1" != "--serve" ]; then
 	# A headless editor run imports the project first if needed (the first time takes a while).
 	godot --headless --path . --import >/dev/null 2>&1 || true
 	godot --headless --path . --export-release "Web" build/web/index.html
+	python3 tools/web_site.py build/web        # the map goes next to the page, not in the pack
 	ls -lh build/web
 fi
 echo "Open http://localhost:8060 (Ctrl+C stops the server)"

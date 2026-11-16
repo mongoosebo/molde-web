@@ -1,0 +1,63 @@
+# Export the game for the browser and publish it on GitHub Pages, on every push to main.
+# Settings -> Pages -> Source must be "GitHub Actions".
+name: Publish the web version
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  GODOT: 4.7.2
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get Godot and its export templates
+        run: |
+          base=https://github.com/godotengine/godot/releases/download/${GODOT}-stable
+          curl -fsSL -o godot.zip "$base/Godot_v${GODOT}-stable_linux.x86_64.zip"
+          unzip -q godot.zip -d "$HOME/godot"
+          mv "$HOME/godot/Godot_v${GODOT}-stable_linux.x86_64" "$HOME/godot/godot"
+          curl -fsSL -o templates.tpz "$base/Godot_v${GODOT}-stable_export_templates.tpz"
+          unzip -q templates.tpz -d /tmp/tpz
+          dir="$HOME/.local/share/godot/export_templates/$(cat /tmp/tpz/templates/version.txt)"
+          mkdir -p "$dir"
+          mv /tmp/tpz/templates/* "$dir/"
+          rm -rf godot.zip templates.tpz /tmp/tpz
+
+      - name: Export for the web
+        run: |
+          mkdir -p build/web
+          "$HOME/godot/godot" --headless --path . --import || true
+          "$HOME/godot/godot" --headless --path . --export-release "Web" build/web/index.html
+          test -f build/web/index.pck
+          python3 tools/web_site.py build/web
+          du -sh build/web
+          ls -lh build/web
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -3,7 +3,8 @@ extends Node3D
 ## Real footprints from the map; facades are modelled with recessed windows, frames, sills,
 ## shopfronts, roofs and textured materials (textures made by tools/make_textures.py).
 
-const TEX_DIR := "res://world/textures/"
+const Paths := preload("res://scripts/paths.gd")
+var TEX_DIR: String = Paths.world + "textures/"
 
 const SPECS := {
 	# Modernist town hall (1966): board-formed concrete and gold-tinted glass, rose garden on the roof.

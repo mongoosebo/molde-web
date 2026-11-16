@@ -1,4 +1,5 @@
 extends Node3D
+const Paths := preload("res://scripts/paths.gd")
 ## Street furniture from world/props.bin (tools/build_map.py): lamps, bus shelters, benches, signs,
 ## parked cars, flagpoles, fences, hedges, walls, pylons and their wires. Each kind is one small model
 ## drawn many times; near the player they are solid as simple boxes (scripts/detail.gd asks for those).
@@ -31,7 +32,7 @@ var cells := {}                # 100 m cell -> [[kind, Transform3D], ...]
 func build(w) -> void:
 	world = w
 	var meshes := _meshes()
-	var data := FileAccess.get_file_as_bytes("res://world/props.bin").to_float32_array()
+	var data := FileAccess.get_file_as_bytes(Paths.world + "props.bin").to_float32_array()
 	var groups := {}           # Vector3i(chunk x, chunk z, kind) -> [[Transform3D, Color], ...]
 	var n := data.size() / 8
 	for i in n:

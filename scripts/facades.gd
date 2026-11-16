@@ -3,7 +3,8 @@ extends RefCounted
 ## corner boards, eaves and proper roofs, generated from each building's real footprint, measured
 ## height and roof shape, and its type on the map. The look is a guess by type, not a survey.
 
-const TEX_DIR := "res://world/textures/"
+const Paths := preload("res://scripts/paths.gd")
+var TEX_DIR: String = Paths.world + "textures/"
 
 # g_h / f_h: storey heights. win / gwin: [width, height, sill] of upper and ground-floor windows.
 # pane: 0 a transom, 1 a centre post in wide windows, 2 a cross, 3 one sheet of glass.
