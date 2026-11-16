@@ -1,0 +1,51 @@
+# Open the published site in headless Chrome after each publish and log what the page shows,
+# the console, and any failed request, so problems in the browser show up in the run's log.
+name: Check the web version
+
+on:
+  workflow_run:
+    workflows: ["Publish the web version"]
+    types: [completed]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Open the site
+        run: |
+          npm install --silent puppeteer@23 >/dev/null 2>&1
+          cat > check.js <<'EOF'
+          const puppeteer = require('puppeteer');
+          const URL = 'https://mongoosebo.github.io/molde-web/';
+          (async () => {
+            const b = await puppeteer.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--no-sandbox'] });
+            const p = await b.newPage();
+            p.on('console', m => console.log('CONSOLE', m.type(), m.text().slice(0, 400)));
+            p.on('pageerror', e => console.log('PAGEERROR', e.message));
+            p.on('requestfailed', r => console.log('REQFAIL', r.url(), r.failure() && r.failure().errorText));
+            p.on('response', r => { if (r.status() >= 400) console.log('HTTP', r.status(), r.url()); });
+            await p.setViewport({ width: 1280, height: 720 });
+            await p.goto(URL, { waitUntil: 'domcontentloaded' });
+            for (let i = 1; i <= 36; i++) {
+              await new Promise(r => setTimeout(r, 5000));
+              const t = await p.evaluate(() => {
+                const m = document.getElementById('msg'), s = document.getElementById('status');
+                return (m ? m.textContent : '(no #msg)') + ' | overlay ' + (s ? s.style.display || 'shown' : 'none');
+              });
+              console.log('T+' + i * 5 + 's', t.replace(/\n/g, ' / '));
+              if (t.includes('overlay none') && i > 6) break;
+            }
+            await p.screenshot({ path: 'shot.png' });
+            await b.close();
+          })();
+          EOF
+          node check.js
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshot
+          path: shot.png
