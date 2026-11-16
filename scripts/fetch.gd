@@ -21,11 +21,15 @@ var _failed := ""
 
 func run(hud) -> bool:
 	_hud = hud
+	# the folder of the page, also when it was opened as .../molde-web without the last slash
 	var href := str(JavaScriptBridge.eval("location.origin + location.pathname", true))
+	if not href.ends_with("/") and not href.get_file().contains("."):
+		href += "/"
 	_base = href.substr(0, href.rfind("/") + 1) + "world/"
 	_hud.set_loading("Looking for the map")
 
 	var req := HTTPRequest.new()
+	req.accept_gzip = false        # the browser has already unpacked anything the server sent packed
 	add_child(req)
 	var err := req.request(_base + "files.json?t=%d" % int(Time.get_unix_time_from_system()))
 	var res: Array = [HTTPRequest.RESULT_CANT_CONNECT, 0, PackedStringArray(), PackedByteArray()]
@@ -33,7 +37,7 @@ func run(hud) -> bool:
 		res = await req.request_completed
 	req.queue_free()
 	if res[0] != HTTPRequest.RESULT_SUCCESS or res[1] != 200:
-		_hud.set_loading("Could not reach the map (%d / %d).\nReload the page to try again." % [res[0], res[1]])
+		_hud.set_loading("Could not reach the map (%d / %d)\n%s\nReload the page to try again." % [res[0], res[1], _base + "files.json"])
 		return false
 	var files = JSON.parse_string((res[3] as PackedByteArray).get_string_from_utf8())
 	if not (files is Array):
@@ -80,6 +84,7 @@ func _start(f: Dictionary) -> void:
 	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
 	var req := HTTPRequest.new()
 	req.download_file = path
+	req.accept_gzip = false
 	add_child(req)
 	var job := {"req": req, "file": f}
 	_active.append(job)
