@@ -9,8 +9,8 @@ Online: https://mongoosebo.github.io/molde-web/
 
 Every push to `main` exports the game and publishes it there (`.github/workflows/pages.yml`; Settings -> Pages ->
 Source must be "GitHub Actions"). The map is not in the game's pack: the page downloads the files in `world/`
-(about 265 MB) while it loads, and the browser keeps them, so later visits start quickly and only fetch files
-that have changed (`scripts/fetch.gd`, list made by `tools/web_site.py`).
+(about 265 MB) before the game starts and the browser keeps them, so later visits start quickly and only fetch
+files that have changed (`web/shell.html`, list made by `tools/web_site.py`).
 
 To try it on your own machine:
 

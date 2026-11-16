@@ -3,7 +3,7 @@ extends Node3D
 ## terrain, sea, buildings, trees and street names.
 
 const Paths := preload("res://scripts/paths.gd")
-var DIR: String = Paths.world      # res://world/, or user://world/ in a browser
+var DIR: String = Paths.world      # res://world/, or /world/ in a browser
 const FCELL := 100            # the 1 m terrain is handled in cells this many metres across
 const FN := 103               # heights along the side of a cell: 101, plus one more all round
 const TR := 3                 # 1 m terrain cells kept around the player, in each direction

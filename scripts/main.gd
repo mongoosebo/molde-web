@@ -11,7 +11,6 @@ const HeliScript := preload("res://scripts/heli.gd")
 const MercedesScript := preload("res://scripts/mercedes.gd")
 const BikeScript := preload("res://scripts/bike.gd")
 const DevtoolScript := preload("res://scripts/devtool.gd")
-const FetchScript := preload("res://scripts/fetch.gd")
 const Paths := preload("res://scripts/paths.gd")
 
 var world
@@ -29,14 +28,11 @@ func _ready() -> void:
 	hud.set_loading("")
 	_setup_environment()
 
-	if OS.has_feature("web"):          # the map is not in the browser pack: download it first
-		var fetch = FetchScript.new()
-		add_child(fetch)
-		var ok: bool = await fetch.run(hud)
-		fetch.queue_free()
-		if not ok:
+	if OS.has_feature("web"):          # the page has put the map in /world/ before starting (web/shell.html)
+		if not FileAccess.file_exists("/world/meta.json"):
+			hud.set_loading("The map is missing.\nReload the page to try again.")
 			return
-		Paths.world = "user://world/"
+		Paths.world = "/world/"
 
 	world = WorldScript.new()
 	world.name = "World"

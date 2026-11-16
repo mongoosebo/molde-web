@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Put the map next to a web export: copy world/ into SITE/world/ and write SITE/world/files.json.
 
-The browser build leaves world/ out of its pack (export_presets.cfg) and scripts/fetch.gd downloads the files
-listed in files.json instead, so no single file on the site comes near GitHub Pages' size limits.
+The browser build leaves world/ out of its pack (export_presets.cfg) and the page (web/shell.html) downloads the
+files listed in files.json instead, so no single file on the site comes near GitHub Pages' size limits.
 
     python3 tools/web_site.py build/web
 """

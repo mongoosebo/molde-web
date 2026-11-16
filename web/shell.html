@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1.0">
+<title>$GODOT_PROJECT_NAME</title>
+<style>
+html, body, #canvas { margin: 0; padding: 0; border: 0; }
+body { color: #eee; background: #111; overflow: hidden; touch-action: none; font: 15px/1.5 system-ui, sans-serif; }
+#canvas { display: block; width: 100vw; height: 100vh; }
+#canvas:focus { outline: none; }
+#status { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+	background: #111; text-align: center; padding: 2em; }
+#status h1 { font-size: 2.2em; letter-spacing: 0.3em; font-weight: 600; margin: 0 0 1em; }
+#bar { width: min(420px, 80vw); height: 8px; background: #333; border-radius: 4px; overflow: hidden; }
+#fill { width: 0; height: 100%; background: #e8d9a0; transition: width 0.2s; }
+#msg { margin-top: 1em; min-height: 3em; white-space: pre-line; opacity: 0.85; }
+#status.error #msg { color: #ff8a80; opacity: 1; }
+</style>
+$GODOT_HEAD_INCLUDE
+</head>
+<body>
+<canvas id="canvas">Your browser does not support the canvas tag.</canvas>
+<div id="status"><h1>MOLDE</h1><div id="bar"><div id="fill"></div></div><div id="msg">Starting</div></div>
+
+<script src="$GODOT_URL"></script>
+<script>
+// The map (world/, listed in world/files.json by tools/web_site.py) is not in the game's pack. This page
+// downloads it with the browser's own fetch, keeps it in the browser's cache storage for the next visit, and
+// puts it in the game's file system at /world/ before the game starts (scripts/main.gd reads it from there).
+const GODOT_CONFIG = $GODOT_CONFIG;
+const PARALLEL = 4;
+const CACHE = 'molde-world';
+const MB = 1048576;
+
+const statusEl = document.getElementById('status');
+const fill = document.getElementById('fill');
+const msg = document.getElementById('msg');
+const show = (text, part) => { msg.textContent = text; if (part !== undefined) fill.style.width = (100 * part).toFixed(1) + '%'; };
+const fail = (text) => { statusEl.classList.add('error'); show(text + '\n\nReload the page to try again.'); };
+
+async function openCache() {
+	try { return 'caches' in window ? await caches.open(CACHE) : null; } catch (e) { return null; }
+}
+
+async function download(f, cache, progress) {
+	const url = new URL('world/' + f.name + '?' + f.hash, location.href).href;
+	if (cache) {
+		try {
+			const hit = await cache.match(url);
+			if (hit) {
+				const buf = await hit.arrayBuffer();
+				if (buf.byteLength === f.size) { progress(f.size); return buf; }
+			}
+		} catch (e) { /* fall through to the network */ }
+	}
+	let lastErr = null;
+	for (let attempt = 0; attempt < 3; attempt++) {
+		let got = 0;
+		try {
+			const res = await fetch(url);
+			if (!res.ok) throw new Error(f.name + ': HTTP ' + res.status);
+			const reader = res.body.getReader();
+			const parts = [];
+			for (;;) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				parts.push(value);
+				got += value.length;
+				progress(value.length);
+			}
+			if (got !== f.size) throw new Error(f.name + ': got ' + got + ' of ' + f.size + ' bytes');
+			const out = new Uint8Array(got);
+			let o = 0;
+			for (const p of parts) { out.set(p, o); o += p.length; }
+			if (cache) {
+				try { await cache.put(url, new Response(out)); } catch (e) { /* storage full: play without keeping it */ }
+			}
+			return out.buffer;
+		} catch (e) {
+			lastErr = e;
+			progress(-got);
+		}
+	}
+	throw lastErr;
+}
+
+async function loadMap(engine) {
+	show('Looking for the map', 0);
+	const res = await fetch('world/files.json', { cache: 'no-cache' });
+	if (!res.ok) throw new Error('world/files.json: HTTP ' + res.status);
+	const files = await res.json();
+	const total = files.reduce((s, f) => s + f.size, 0);
+	const cache = await openCache();
+	if (cache) {                        // forget copies of files that have changed or gone
+		const want = new Set(files.map(f => new URL('world/' + f.name + '?' + f.hash, location.href).href));
+		for (const req of await cache.keys()) if (!want.has(req.url)) cache.delete(req);
+	}
+	let got = 0;
+	const progress = (n) => {
+		got += n;
+		show('Loading the map  ' + Math.floor(got / MB) + ' / ' + Math.round(total / MB) + ' MB', 0.9 * got / total);
+	};
+	const queue = files.slice();
+	const worker = async () => {
+		while (queue.length) {
+			const f = queue.shift();
+			const buf = await download(f, cache, progress);
+			await engine.preloadFile(buf, '/world/' + f.name);
+		}
+	};
+	await Promise.all(Array.from({ length: PARALLEL }, worker));
+}
+
+(async () => {
+	const missing = Engine.getMissingFeatures({ threads: false });
+	if (missing.length) {
+		fail('This browser cannot run the game. Missing:\n' + missing.join('\n'));
+		return;
+	}
+	const engine = new Engine(GODOT_CONFIG);
+	try {
+		await loadMap(engine);
+		show('Starting the game', 0.9);
+		await engine.startGame({
+			onProgress: (cur, all) => { if (all > 0) show('Starting the game', 0.9 + 0.1 * cur / all); },
+		});
+		statusEl.style.display = 'none';
+	} catch (err) {
+		console.error(err);
+		fail('Could not load: ' + (err && err.message ? err.message : err));
+	}
+})();
+</script>
+</body>
+</html>
