@@ -18,6 +18,7 @@ const FOOT := Vector3(0.42, 0.44, -0.05)
 var _chassis: Node3D
 var _bars: Node3D
 var _col: CollisionShape3D
+var _body_mesh: ArrayMesh
 var _wheels: Array = []          # [hub, tyre, is_front, rest position, arm strut, shock strut, arm mount, shock mount]
 var _spin := 0.0
 var _offsets := [0.0, 0.0, 0.0, 0.0]
@@ -61,6 +62,7 @@ func _ready() -> void:
 	_build_plastics(g)
 	var body := MeshInstance3D.new()
 	body.mesh = g.commit(_mats)
+	_body_mesh = body.mesh
 	_chassis.add_child(body)
 
 	# the handlebars, which turn: the bar itself, grips, levers, the pod with the speedometer, the steering column
@@ -87,7 +89,13 @@ func _ready() -> void:
 	# wheels: fat low-pressure tyres with lugs, on dished rims; each hangs on an arm and a coil-sprung shock
 	var w = Shapes.Geo.new()
 	_build_wheel(w)
-	var wheel_mesh: ArrayMesh = w.commit(_mats)
+	var wheel_mats := {}                                # a tyre is a shell: both sides of it are drawn, so it is never seen through
+	for key in _mats:
+		wheel_mats[key] = _mats[key]
+		if _mats[key] is StandardMaterial3D:
+			wheel_mats[key] = _mats[key].duplicate()
+			wheel_mats[key].cull_mode = BaseMaterial3D.CULL_DISABLED
+	var wheel_mesh: ArrayMesh = w.commit(wheel_mats)
 	var arm_g = Shapes.Geo.new()
 	arm_g.tube("black", [Vector3(0, -0.5, -0.05), Vector3(0, 0.5, -0.10)], 0.016, 8)
 	arm_g.tube("black", [Vector3(0, -0.5, 0.05), Vector3(0, 0.5, 0.10)], 0.016, 8)
@@ -122,11 +130,8 @@ func _ready() -> void:
 			_wheels.append([hub, mi, front, hub.position, arm, shock,
 				Vector3(sx2 + inward * 0.27, 0.40, z), Vector3(sx2 + inward * 0.20, 0.74, z)])
 
-	var shape := BoxShape3D.new()
-	shape.size = Vector3(1.15, 0.95, 2.1)
 	_col = CollisionShape3D.new()
-	_col.shape = shape
-	_col.position = Vector3(0, 0.5, 0)
+	_col.shape = hull_shape()
 	var sbody := StaticBody3D.new()
 	sbody.add_child(_col)
 	add_child(sbody)
@@ -285,6 +290,26 @@ func _box(parent: Node3D, size: Vector3, pos: Vector3, color: Color) -> void:
 
 func specs() -> Dictionary:
 	return SPECS
+
+
+## Where the tyres stand on the ground, in the ATV's own frame.
+func wheel_points() -> Array:
+	var out := []
+	for w in _wheels:
+		out.append(Vector3(w[3].x, 0, w[3].z))
+	return out
+
+
+## The shape of the body, for bumping into: the hull of what is drawn. With `floor` set, nothing of it reaches
+## lower than that (the wheels carry a driven vehicle; its body must clear kerbs and bumps).
+func hull_shape(floor := -1.0) -> ConvexPolygonShape3D:
+	var shape: ConvexPolygonShape3D = _body_mesh.create_convex_shape(true, true)
+	if floor > 0.0:
+		var pts := shape.points
+		for i in pts.size():
+			pts[i].y = maxf(pts[i].y, floor)
+		shape.points = pts
+	return shape
 
 
 func set_drift(_on: bool, _slip: float, _speed: float) -> void:

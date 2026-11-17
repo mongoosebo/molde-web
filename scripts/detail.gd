@@ -32,6 +32,9 @@ var _job_key := Vector2i(-99999, -99999)
 var _job: Dictionary = {}
 var _centre := Vector3(1e9, 0, 1e9)
 var _queue: Array = []
+var _tri_index := {}           # cell -> {2.5 m square -> offsets of the asphalt triangles in it}
+var budget_usec := BUDGET_USEC
+var sweep := false            # the road sweep (main.gd --sweep): no buildings, roads on their own layer
 
 
 func setup(w) -> void:
@@ -100,10 +103,10 @@ func _load_paved() -> void:
 	var i := 0
 	while i + 6 <= data.size():
 		var key := Vector2i(int(data[i]), int(data[i + 1]))
-		var na := int(data[i + 2]) * 6
-		var ns := int(data[i + 3]) * 6
-		var nk := int(data[i + 4]) * 4
-		var ne := int(data[i + 5]) * 4
+		var na := int(data[i + 2]) * 9
+		var ns := int(data[i + 3]) * 9
+		var nk := int(data[i + 4]) * 10
+		var ne := int(data[i + 5]) * 10
 		i += 6
 		paved[key] = [data.slice(i, i + na), data.slice(i + na, i + na + ns), data.slice(i + na + ns, i + na + ns + nk),
 			data.slice(i + na + ns + nk, i + na + ns + nk + ne)]
@@ -144,7 +147,7 @@ func _drop(k: Vector2i) -> void:
 
 
 func _process(_delta: float) -> void:
-	_work(BUDGET_USEC)
+	_work(budget_usec)
 
 
 ## Build everything in range right now (loading screen, screenshots).
@@ -169,7 +172,7 @@ func _work(budget: int) -> void:
 		var pv: Array = paved.get(_job_key, [])
 		while _job["part"] < pv.size():
 			var arr: PackedFloat32Array = pv[_job["part"]]
-			var stride := 6 if _job["part"] < 2 else 4
+			var stride := 9 if _job["part"] < 2 else 10
 			var stop := mini(_job["p"] + stride * 40, arr.size())
 			_paved_part(_job["roads"], _job["cv"], _job["part"], arr, _job["p"], stop)
 			_job["p"] = stop
@@ -185,7 +188,7 @@ func _work(budget: int) -> void:
 				_job["r"] += 2
 			if budget >= 0 and Time.get_ticks_usec() - t0 > budget:
 				return
-		while _job["b"] < recs.size():
+		while _job["b"] < recs.size() and not sweep:
 			fac.build(_job["mb"], recs[_job["b"]])
 			_job["b"] += 1
 			if budget >= 0 and Time.get_ticks_usec() - t0 > budget:
@@ -209,6 +212,8 @@ func _finish() -> void:
 		var ri := MeshInstance3D.new()
 		ri.mesh = fac.commit(rb)
 		ri.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		if sweep:
+			ri.layers = 2
 		node.add_child(ri)
 	var cv: PackedVector3Array = _job["cv"]
 	if not cv.is_empty():
@@ -278,6 +283,55 @@ func _g(p: Vector2, lift: float) -> Vector3:
 	return Vector3(p.x, y + lift, p.y)
 
 
+## A point of paint on the asphalt: the ground right there (the asphalt lies 0.10 over it) and a hair more.
+func _p(p: Vector2, lift := 0.125) -> Vector3:
+	var y := surface_at(p.x, p.y)
+	if is_nan(y):
+		y = world.height_at(p.x, p.y)
+	return Vector3(p.x, y + lift, p.y)
+
+
+## The height of the laid asphalt at a point, before its lift (NAN where there is none). The triangles of a
+## cell are sorted by the 2.5 m square each lies in, the first time the cell is asked about.
+func surface_at(x: float, z: float) -> float:
+	var key := cell_of(x, z)
+	var pv = paved.get(key)
+	if pv == null:
+		return NAN
+	var arr: PackedFloat32Array = pv[0]
+	var idx = _tri_index.get(key)
+	if idx == null:
+		if _tri_index.size() > 150:
+			_tri_index.clear()
+		idx = {}
+		var i := 0
+		while i < arr.size():
+			var sq := Vector2i(int(floor((arr[i] + arr[i + 3] + arr[i + 6]) / 7.5)), int(floor((arr[i + 2] + arr[i + 5] + arr[i + 8]) / 7.5)))
+			if not idx.has(sq):
+				idx[sq] = []
+			idx[sq].append(i)
+			i += 9
+		_tri_index[key] = idx
+	var list = idx.get(Vector2i(int(floor(x / 2.5)), int(floor(z / 2.5))))
+	if list == null:
+		return NAN
+	for i in list:
+		var ax := arr[i]
+		var az := arr[i + 2]
+		var e1x := arr[i + 3] - ax
+		var e1z := arr[i + 5] - az
+		var e2x := arr[i + 6] - ax
+		var e2z := arr[i + 8] - az
+		var den := e1x * e2z - e1z * e2x
+		if absf(den) < 1e-7:
+			continue
+		var u := ((x - ax) * e2z - (z - az) * e2x) / den
+		var v := ((z - az) * e1x - (x - ax) * e1z) / den
+		if u >= -0.002 and v >= -0.002 and u + v <= 1.002:
+			return arr[i + 1] + u * (arr[i + 4] - arr[i + 1]) + v * (arr[i + 7] - arr[i + 1])
+	return NAN
+
+
 func _quad_cv(cv: PackedVector3Array, a: Vector3, b: Vector3, c: Vector3, d: Vector3) -> void:
 	cv.append(a); cv.append(b); cv.append(c)
 	cv.append(a); cv.append(c); cv.append(d)
@@ -299,38 +353,40 @@ func _paved_part(mb, cv: PackedVector3Array, part: int, arr: PackedFloat32Array,
 		var m := "asphalt" if part == 0 else "sidewalk"
 		var col := ASPHALT if part == 0 else SIDEWALK
 		while i < to:
-			var a := _g(Vector2(arr[i], arr[i + 1]), lift)
-			var b := _g(Vector2(arr[i + 2], arr[i + 3]), lift)
-			var c := _g(Vector2(arr[i + 4], arr[i + 5]), lift)
-			i += 6
+			var a := Vector3(arr[i], arr[i + 1] + lift, arr[i + 2])
+			var b := Vector3(arr[i + 3], arr[i + 4] + lift, arr[i + 5])
+			var c := Vector3(arr[i + 6], arr[i + 7] + lift, arr[i + 8])
+			i += 9
 			if minf(a.y, minf(b.y, c.y)) < 0.45:
 				continue                                       # out in the water
 			mb.tri(m, a, b, c, up, col)
 			cv.append(a); cv.append(b); cv.append(c)
 		return
 	while i < to:
-		var p0 := Vector2(arr[i], arr[i + 1])
-		var p1 := Vector2(arr[i + 2], arr[i + 3])
-		i += 4
-		var t := (p1 - p0).normalized()
-		var out := Vector3(t.y, 0, -t.x)                       # the open side
+		var a0 := Vector3(arr[i], arr[i + 1], arr[i + 2])
+		var o0 := Vector3(arr[i + 3], 0, arr[i + 4])               # the way out of the paving at this end of the piece
+		var b0 := Vector3(arr[i + 5], arr[i + 6], arr[i + 7])
+		var o1 := Vector3(arr[i + 8], 0, arr[i + 9])
+		i += 10
+		var out := (o0 + o1).normalized()
 		if part == 2:
 			# kerb and back edge of a sidewalk: drawn upright, solid as a short ramp
-			var a := _g(p0, 0.23)
-			var b := _g(p1, 0.23)
+			var a := a0 + Vector3(0, 0.23, 0)
+			var b := b0 + Vector3(0, 0.23, 0)
 			if minf(a.y, b.y) < 0.6:
 				continue
 			var dn := Vector3(0, 0.9, 0)
 			mb.quad("trim", a, b, b - dn, a - dn, out, KERB)
-			_quad_cv(cv, a, b, b + out * 1.2 - Vector3(0, 0.3, 0), a + out * 1.2 - Vector3(0, 0.3, 0))      # a long, gentle ramp to drive over: no jolt
+			_quad_cv(cv, a, b, b + o1 * 1.2 - Vector3(0, 0.3, 0), a + o0 * 1.2 - Vector3(0, 0.3, 0))      # a long, gentle ramp to drive over: no jolt
 		else:
 			# the edge of the asphalt falling away into the ground: a gentle ramp, so wheels roll up onto the road
-			var a := _g(p0, 0.10)
-			var b := _g(p1, 0.10)
+			var a := a0 + Vector3(0, 0.10, 0)
+			var b := b0 + Vector3(0, 0.10, 0)
 			if minf(a.y, b.y) < 0.5:
 				continue
-			var dn := out * 1.6 - Vector3(0, 0.7, 0)
-			_solid(mb, cv, "asphalt", a, b, b + dn, a + dn, (up + out * 0.45).normalized(), SHOULDER)
+			# (drawn steep, so that a bank beside the road cannot cut it into a ragged edge; solid as a long ramp)
+			mb.quad("asphalt", a, b, b + o1 * 0.5 - Vector3(0, 1.0, 0), a + o0 * 0.5 - Vector3(0, 1.0, 0), (up * 0.45 + out).normalized(), SHOULDER)
+			_quad_cv(cv, a, b, b + o1 * 1.6 - Vector3(0, 0.7, 0), a + o0 * 1.6 - Vector3(0, 0.7, 0))
 
 
 const DECK := Color(0.47, 0.47, 0.48)
@@ -360,10 +416,13 @@ func _road_segment(mb, cv: PackedVector3Array, way: Array, i: int) -> void:
 		var s := ceilf(dist[i]) - dist[i]
 		while s < length:
 			var c := p0 + t * s
-			var c2 := p0 + t * minf(s + 0.5, length)
-			# each bar in two halves, so it lies on the crown of the road
-			mb.quad_auto("mark", _g(c + n0 * half, 0.15), _g(c, 0.15), _g(c2, 0.15), _g(c2 + n0 * half, 0.15), up, WHITE)
-			mb.quad_auto("mark", _g(c, 0.15), _g(c - n0 * half, 0.15), _g(c2 - n0 * half, 0.15), _g(c2, 0.15), up, WHITE)
+			var c2 := p0 + t * (minf(s + 0.5, length) if i == pts.size() - 2 else s + 0.5)      # every bar whole, also across a joint in the line
+			# each bar in metre-long pieces, so it lies on the road as the asphalt does (over its crown, onto a bridge)
+			var steps := maxi(1, int(ceil(half)))
+			for j in range(-steps, steps):
+				var lo := n0 * (half * float(j) / float(steps))
+				var hi := n0 * (half * float(j + 1) / float(steps))
+				mb.quad_auto("mark", _p(c + hi), _p(c + lo), _p(c2 + lo), _p(c2 + hi), up, WHITE)
 			s += 1.0
 		return
 	if kind == 1:
@@ -383,7 +442,7 @@ func _road_segment(mb, cv: PackedVector3Array, way: Array, i: int) -> void:
 		var step := width / float(count)
 		for k in count:
 			var base := p0 + t * (step * (float(k) + 0.5))
-			mb.tri("mark", _g(base - t * 0.25, 0.15), _g(base + t * 0.25, 0.15), _g(base + back * 0.6, 0.15), up, WHITE)
+			mb.tri("mark", _p(base - t * 0.25), _p(base + t * 0.25), _p(base + back * 0.6), up, WHITE)
 		return
 	if kind == 5:
 		# runway paint: a centre line of long dashes, edge lines, and bars across at both ends
@@ -410,16 +469,25 @@ func _road_segment(mb, cv: PackedVector3Array, way: Array, i: int) -> void:
 		var ok: PackedByteArray = way[5]
 		if ok[i] == 0 or ok[i + 1] == 0:
 			return
-		if (mark == 1 or mark == 2) and int(dist[i] / 3.0) % 4 == 0:
-			var c0 := _g(p0, 0.10) + hair
-			var c1 := _g(p1, 0.10) + hair
-			mb.quad("mark", c0 + out0 * 0.06, c0 - out0 * 0.06, c1 - out1 * 0.06, c1 + out1 * 0.06, up, YELLOW)
-		if mark >= 2:
-			for sgn in [1.0, -1.0]:
-				var sd: float = sgn
-				var e0 := _g(p0 + n0 * (sd * (half - 0.25)), 0.10) + hair
-				var e1 := _g(p1 + n1 * (sd * (half - 0.25)), 0.10) + hair
-				mb.quad("mark", e0 - out0 * 0.05, e0 + out0 * 0.05, e1 + out1 * 0.05, e1 - out1 * 0.05, up, WHITE)
+		# each stretch in two pieces, lying on the asphalt as it rises and falls
+		for part in 2:
+			var fa := float(part) * 0.5
+			var qa := p0.lerp(p1, fa)
+			var qb := p0.lerp(p1, fa + 0.5)
+			var na := n0.lerp(n1, fa).normalized()
+			var nb := n0.lerp(n1, fa + 0.5).normalized()
+			var oa := Vector3(na.x, 0, na.y)
+			var ob := Vector3(nb.x, 0, nb.y)
+			if (mark == 1 or mark == 2) and int(dist[i] / 3.0) % 4 == 0:
+				var c0 := _p(qa)
+				var c1 := _p(qb)
+				mb.quad("mark", c0 + oa * 0.06, c0 - oa * 0.06, c1 - ob * 0.06, c1 + ob * 0.06, up, YELLOW)
+			if mark >= 2:
+				for sgn in [1.0, -1.0]:
+					var sd: float = sgn
+					var e0 := _p(qa + na * (sd * (half - 0.25)))
+					var e1 := _p(qb + nb * (sd * (half - 0.25)))
+					mb.quad("mark", e0 - oa * 0.05, e0 + oa * 0.05, e1 + ob * 0.05, e1 - ob * 0.05, up, WHITE)
 		return
 	if kind == 8:
 		_steps_segment(mb, cv, half, p0, p1, n0)
@@ -513,7 +581,7 @@ func _bridge_segment(mb, cv: PackedVector3Array, way: Array, i: int) -> void:
 	mark = mark % 16
 	var road := half > 2.0
 	var conc := mark == 9                                              # a footbridge of concrete, with concrete parapets
-	var thick := Vector3(0, 0.35 if road else (0.28 if conc else 0.18), 0)
+	var thick := Vector3(0, 0.35 if road else (0.28 if conc else 0.15), 0)
 	var body := CONCRETE if road or conc else TIMBER
 	var a0 := c0 + o0 * half
 	var b0 := c0 - o0 * half
@@ -602,7 +670,11 @@ func _bridge_segment(mb, cv: PackedVector3Array, way: Array, i: int) -> void:
 	if i % every == every - 2 and i > 0 and i < n - 2:
 		var ground2: float = world.height_at(pts[i].x, pts[i].y)
 		var under := c0.y - thick.y - deep.y
-		if under - ground2 > 1.6:
+		var on_road := false                               # no pier stands in a carriageway under the bridge
+		for off in [-half, 0.0, half]:
+			if not is_nan(surface_at(pts[i].x + o0.x * off, pts[i].y + o0.z * off)):
+				on_road = true
+		if under - ground2 > 1.6 and not on_road:
 			var bottom := maxf(ground2, -3.0) - 0.6
 			mb.box("plaster", Vector3(c0.x, under - 0.2, c0.z), o0, Vector3.UP, along, Vector3(half * 0.85, 0.2, 0.55), CONCRETE)
 			mb.box("plaster", Vector3(c0.x, (under - 0.4 + bottom) * 0.5, c0.z), o0, Vector3.UP, along,

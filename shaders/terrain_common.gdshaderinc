@@ -45,7 +45,9 @@ vec3 ground_colour(vec3 wpos, inout vec3 n, float h, float dist, out float rough
 	float path = smoothstep(0.3, 0.6, m.g) * 0.85;
 	col = mix(col, gravel, path);
 	stony = max(stony, path);
-	float road = smoothstep(0.35, 0.6, m.r);
+	// m.r is 1 where the ground itself is the road (gravel, runway) and about 0.5 where asphalt has been laid on
+	// it: that is tinted only from afar, where the laid asphalt is not built
+	float road = mix(smoothstep(0.68, 0.86, m.r), smoothstep(0.17, 0.3, m.r), smoothstep(110.0, 165.0, dist));
 	col = mix(col, asphalt, road);
 	float lake = smoothstep(0.4, 0.6, 1.0 - m.a);
 	col = mix(col, vec3(0.02, 0.05, 0.07), lake);

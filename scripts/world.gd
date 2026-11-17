@@ -303,6 +303,7 @@ func _build_terrain() -> void:
 
 	var mi := MeshInstance3D.new()
 	mi.name = "Terrain"
+	mi.layers = 3                                 # layer 2: what the road sweep's camera sees (ground and paving)
 	mi.mesh = plane
 	mi.material_override = mat
 	mi.position = Vector3((x0 + x1) * 0.5, 0.0, (z0 + z1) * 0.5)
@@ -362,6 +363,7 @@ func _make_near(k: Vector2i) -> Node3D:
 		Image.create_from_data(FN, FN, false, Image.FORMAT_RF, data.to_byte_array())))
 	var mi := MeshInstance3D.new()
 	mi.mesh = _near_mesh
+	mi.layers = 3
 	mi.material_override = mat
 	mi.custom_aabb = AABB(Vector3(-FCELL * 0.5, rng.x - 5.0, -FCELL * 0.5), Vector3(FCELL, rng.y - rng.x + 6.0, FCELL))
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF

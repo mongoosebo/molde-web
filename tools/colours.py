@@ -103,6 +103,25 @@ def boil(samples):
     return [int(round(v)) for v in centre]
 
 
+def boil_lit(samples):
+    """As boil(), for many readings spread all over a wall: windows, balconies and shade are darker than the
+    wall, so only the lighter half of the readings is asked, and half of those must agree."""
+    s = np.asarray(samples, float)
+    if len(s) < 16:
+        return None
+    lum = s @ np.array([0.3, 0.6, 0.1])
+    s = s[lum >= np.percentile(lum, 50)]
+    centre = np.median(s, 0)
+    for _ in range(5):
+        near = np.linalg.norm(s - centre, axis=1) < 38
+        if near.sum() < 6:
+            return None
+        centre = np.median(s[near], 0)
+    if near.sum() < 0.5 * len(s):
+        return None
+    return [int(round(v)) for v in centre]
+
+
 def trusted(rgb, roof):
     """Is a boiled-down colour one to believe? What stands between a camera and a house — a retaining wall,
     a road, a shadow, a hedge — is grey, dark or green, so those are not trusted; a light or a clearly
@@ -133,13 +152,39 @@ def usable(rgb, spread, roof):
     return True
 
 
-def main(only=None, debug=False):
+def trusted_close(rgb, roof):
+    """The same question for Vegbilder's photos, taken from the street right in front of the house. A clearly
+    coloured wall is believed, dark ones too, and so is a clearly white one. A middling grey is not: a white
+    wall in the shade reads just like it. Nor is green (a tree in the way)."""
+    r, g, b = rgb
+    lum = 0.3 * r + 0.6 * g + 0.1 * b
+    sat = max(rgb) - min(rgb)
+    if roof:
+        return trusted(rgb, True)
+    if (g >= r and g >= b and sat > 12) or lum < 40:
+        return None
+    if lum >= 175 and sat < 26:
+        return [236, 234, 226]
+    if sat < 24:
+        return None
+    return [int(r), int(g), int(b)]
+
+
+def main(only=None, debug=False, source="mapillary", crops=None):
     ground = Ground()
     blds = json.load(open(os.path.join(ROOT, "world", "buildings.json")))
     polys = [Polygon(list(zip(b[5][0::2], b[5][1::2]))).buffer(0) for b in blds]
     tree = shapely.STRtree(polys)
     cams = []
-    for r in json.load(open(os.path.join(DIR, "images.json"))):
+    if source == "vegbilder":
+        import vegbilder
+        for r in json.load(open(os.path.join(vegbilder.DIR, "images.json"))):
+            h = math.radians(r["heading"])                          # the middle of the photo looks the way the car drove
+            R = np.array([[math.cos(h), -math.sin(h), 0.0], [0.0, 0.0, -1.0], [math.sin(h), math.cos(h), 0.0]])
+            cams.append({"id": r["id"], "x": r["x"], "z": r["z"], "y": ground.at(r["x"], r["z"]) + vegbilder.EYE, "R": R,
+                         "kind": "spherical", "pano": True, "f": 0.85, "k1": 0, "k2": 0, "w": 2, "h": 1, "long": 2,
+                         "year": r["year"], "seq": r["run"], "row": r})
+    for r in json.load(open(os.path.join(DIR, "images.json"))) if source == "mapillary" else []:
         if "computed_geometry" not in r or "computed_rotation" not in r or r.get("camera_type") == "fisheye":
             continue                                                # (the few fisheye photos are turned another way round)
         lon, lat = r["computed_geometry"]["coordinates"]
@@ -181,13 +226,16 @@ def main(only=None, debug=False):
                 base = max(w[4], w[5])
                 if top - base < 2.2:
                     continue
-                for f in (0.3, 0.5, 0.7):
+                # Vegbilder stands right in front of the wall: there readings are taken all over its upper part
+                close = source == "vegbilder"
+                for f in (np.linspace(0.9 / ln, 1 - 0.9 / ln, max(2, int(ln / 1.5))) if close else (0.3, 0.5, 0.7)):
                     x, z = ax + (bx - ax) * f, az + (bz - az) * f
                     vx, vz = cam["x"] - x, cam["z"] - z
                     d = math.hypot(vx, vz)
                     if not (5 < d < REACH) or (vx * ox + vz * oz) / d < 0.42 or not clear(cam, x, z, bi):
                         continue
-                    for y in {round(top - 1.0, 1), round(top - 1.7, 1), round(max(top - 2.4, (base + top) / 2), 1)}:      # high up, clear of hedges and cars
+                    for y in ({round(max(base + 3.3, base + (top - base) * q), 1) for q in (0.45, 0.55, 0.65, 0.75, 0.85) if base + (top - base) * q < top - 0.6} if close else
+                              {round(top - 1.0, 1), round(top - 1.7, 1), round(max(top - 2.4, (base + top) / 2), 1)}):      # high up, clear of hedges and cars
                         pts.append((False, (x, y, z)))
             for face in b[6]["f"]:
                 if face[0]:
@@ -228,8 +276,11 @@ def main(only=None, debug=False):
     # ---- fetch the photos (1024 px versions)
     os.makedirs(IMG, exist_ok=True)
 
+    paths = {}
+
     def fetch(image_id):
         path = os.path.join(IMG, image_id + ".jpg")
+        paths[image_id] = path
         if os.path.exists(path) and os.path.getsize(path) > 2000:
             return True
         out = subprocess.run(["curl", "-s", "-m", "60", "-A", "map-builder/1.0", "-G", "https://graph.mapillary.com/" + image_id,
@@ -241,6 +292,13 @@ def main(only=None, debug=False):
             return False
         subprocess.run(["curl", "-s", "-m", "90", "-A", "map-builder/1.0", "-o", path, url])
         return os.path.exists(path) and os.path.getsize(path) > 2000
+
+    if source == "vegbilder":
+        rows = {c["id"]: c["row"] for c in cams}
+
+        def fetch(image_id):
+            paths[image_id] = vegbilder.fetch(rows[image_id])
+            return paths[image_id] is not None
 
     with ThreadPoolExecutor(8) as pool:
         got = list(pool.map(fetch, want))
@@ -254,7 +312,9 @@ def main(only=None, debug=False):
     readings = {bi: ([], []) for bi in jobs}
     seen_in = {bi: set() for bi in jobs}
     for ci, items in by_cam.items():
-        path = os.path.join(IMG, cams[ci]["id"] + ".jpg")
+        path = paths.get(cams[ci]["id"])
+        if not path:
+            continue
         try:
             im = np.asarray(Image.open(path).convert("RGB")).astype(np.float32)
         except OSError:
@@ -276,33 +336,56 @@ def main(only=None, debug=False):
                     readings[bi][1 if roof else 0].append(rgb)
                     seen_in[bi].add(ci)
                 marks.append((col, row, roof))
+        if crops:                                                   # a picture of each building from its best photo, to judge by eye
+            for bi, pts in items:
+                if jobs[bi][0][0] != ci:
+                    continue
+                uv = np.array([pixel(cams[ci], p) for roof, p in pts if not roof] or [(0.5, 0.5)])
+                shift = 0.5 - float(np.median(uv[:, 0]))            # turn the photo so the building is in the middle
+                rolled = np.roll(im, int(round(shift * W)), axis=1)
+                us = (uv[:, 0] + shift) % 1.0
+                c0, c1 = int(max(us.min() - 0.03, 0) * W), int(min(us.max() + 0.03, 1) * W)
+                r0, r1 = int(max(uv[:, 1].min() - 0.05, 0) * H), int(min(uv[:, 1].max() + 0.12, 0.62) * H)
+                if c1 - c0 > 20 and r1 - r0 > 20:
+                    Image.fromarray(rolled[r0:r1, c0:c1].astype(np.uint8)).save(os.path.join(crops, "%d.jpg" % blds[bi][10]))
         if debug:
             dbg = Image.open(path).convert("RGB")
             from PIL import ImageDraw
             d = ImageDraw.Draw(dbg)
             for col, row, roof in marks:
                 d.rectangle((col - 4, row - 4, col + 4, row + 4), outline=(255, 0, 0) if roof else (0, 255, 255), width=2)
-            dbg.save(os.path.join(DIR, "debug_" + cams[ci]["id"] + ".jpg"))
+            dbg.save(os.path.join(os.path.dirname(os.path.dirname(path)), "debug_" + os.path.basename(path)))
     out, raw = {}, {}
     for bi, (walls, roofs) in readings.items():
         rec = {}
         if len(seen_in[bi]) < 2:
             continue                                                # one photo alone is not enough
-        wall, roof = boil(walls), boil(roofs)
+        wall, roof = (boil_lit if source == "vegbilder" else boil)(walls), boil(roofs)
         raw[str(blds[bi][10])] = {"wall": wall, "roof": roof}
-        wall, roof = wall and trusted(wall, False), roof and trusted(roof, True)
+        wall, roof = wall and (trusted_close if source == "vegbilder" else trusted)(wall, False), roof and trusted(roof, True)
         if wall:
             rec["wall"] = wall
         if roof:
             rec["roof"] = roof
         if rec:
             out[str(blds[bi][10])] = rec
-    json.dump(raw, open(os.path.join(DIR, "raw_colours.json"), "w"))
+    json.dump(raw, open(os.path.join(vegbilder.DIR if source == "vegbilder" else DIR, "raw_colours.json"), "w"))
     return out
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:                                           # a look at a few buildings: python3 colours.py <OSM id> …
+    if "--vegbilder" in sys.argv:                                   # from the road photos listed by tools/vegbilder.py
+        ids = {int(a) for a in sys.argv[1:] if a.isdigit()}
+        crops = os.path.join(ROOT, "data", "vegbilder", "crops") if "--crops" in sys.argv else None
+        if crops:
+            os.makedirs(crops, exist_ok=True)
+        res = main(ids or None, debug=bool(ids), source="vegbilder", crops=crops)
+        if ids:
+            print(res)
+        else:
+            json.dump(res, open(os.path.join(ROOT, "data", "colours_vegbilder.json"), "w"), separators=(",", ":"))
+            print("buildings with a colour from Vegbilder:", len(res))
+    elif len(sys.argv) > 1:                                         # a look at a few buildings: python3 colours.py <OSM id> …
         print(main({int(a) for a in sys.argv[1:]}, debug=True))
     else:
         res = main()

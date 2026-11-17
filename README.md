@@ -47,7 +47,9 @@ Everything in it comes from open data:
 What a building looks like close up (style, apparent age, colours) is chosen by rule from its type and
 measured shape. A few dozen buildings have their real wall colour, read from Mapillary street photos
 (`tools/mapillary.py`, `tools/colours.py` -> `data/colours.json`); the photos cover little of the town and
-only readings that several photos agree on are used. Those two tools need a Mapillary access token in
+only readings that several photos agree on are used. Along Storgata the wall colours come from Statens vegvesen's
+all-round road photos instead (Vegbilder, open data: `tools/vegbilder.py Storgata`, then `tools/colours.py --vegbilder`
+-> `data/colours_vegbilder.json`), checked by eye house by house; what the eye corrected is in `tools/overrides.py`. Those two tools need a Mapillary access token in
 `~/.config/molde/mapillary_token`; the rest of the map builds without it.
 
 ## Rebuild the map
@@ -68,6 +70,10 @@ takes some minutes; later runs about a minute.
     ./run.sh -- --shot --view=x,z,yaw,pitch,distance   # save a picture from any spot to data/shot0.png
     ./run.sh -- --perf                                 # frame times on a fast ride through the centre
     ./run.sh -- --drive                                # autopilot the ATV along ten roads; reports what stops it
+    godot --headless --path . -- --drive --car --quick --roads=all   # the Volvo along every road, without a window
+    ./run.sh -- --sweep                                # a straight-down picture of every paved tile to data/sweep/
+    .venv/bin/python tools/sweep.py                    # ...compared with what was meant to be paved (data/sweep.json)
+    .venv/bin/python tools/house_audit.py              # every house against the laser scan (data/house_audit.json)
 
 ## Notes from inside the game
 
@@ -82,3 +88,4 @@ not in git. `./run.sh -- --notetest --view=x,z,yaw,pitch,dist` tries the tool wi
 Map data © OpenStreetMap contributors, available under the Open Database License (ODbL).
 Terrain, building heights and roof shapes from Kartverket's laser data (hoydedata.no), © Kartverket.
 A few wall colours are derived from street photos by Mapillary contributors (CC BY-SA 4.0).
+Wall colours along Storgata are derived from Vegbilder road photos, © Statens vegvesen (NLOD).

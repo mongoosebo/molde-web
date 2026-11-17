@@ -476,6 +476,105 @@ for e in elements:
         cover(t, pts)
 
 # ---------------------------------------------------------------- roads and sidewalks for the close-up meshes
+# ---------------------------------------------------------------- outlines put where the laser has the building
+# Many outlines on the map were drawn by hand from aerial photos and sit a metre or three beside the house
+# (garages and sheds most of all). Each building, or each group of buildings that touch, is slid over the laser
+# surface model to where most of it stands on something roof-like (standing well over the ground, and even) and
+# least of its surroundings do; it is moved there when that is clearly better. Results are kept between runs.
+def _register_outlines():
+    import pickle
+    path = os.path.join(DATA, "kartverket", "shifts2.pkl")
+    try:
+        cache = pickle.load(open(path, "rb"))
+    except (OSError, EOFError):
+        cache = {}
+    fixed = {231352909, 172573648, 172573646, 935525932, 310662273, 230972703, SEILET_ID} | {i for i, v in overrides.BUILDINGS.items() if v.get("join")}
+    polys, index = [], []
+    for k, (_t, q, _i) in enumerate(buildings_raw):
+        if len(q) >= 3:
+            g = SPoly(q)
+            if g.is_valid and g.area > 4:
+                polys.append(g)
+                index.append(k)
+    tree = shapely.STRtree(polys)
+    parent = list(range(len(polys)))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    ia, ib = tree.query(polys, predicate="dwithin", distance=0.25)
+    for a, b in zip(ia.tolist(), ib.tolist()):
+        if a != b:
+            parent[find(a)] = find(b)
+    groups = {}
+    for a in range(len(polys)):
+        groups.setdefault(find(a), []).append(a)
+    moved, tried = 0, 0
+    for members in groups.values():
+        if any(buildings_raw[index[a]][2] in fixed for a in members):
+            continue
+        foot = unary_union([polys[a] for a in members]) if len(members) > 1 else polys[members[0]]
+        if foot.area > 1500:
+            continue
+        key = (tuple(sorted(buildings_raw[index[a]][2] for a in members)), round(foot.area, 1), round(foot.centroid.x, 1), round(foot.centroid.y, 1))
+        if key not in cache:
+            tried += 1
+            x0, z0, x1, z1 = foot.bounds
+            S = 0.5
+            xs, zs = np.arange(x0 - 8, x1 + 8.01, S), np.arange(z0 - 8, z1 + 8.01, S)
+            gx, gz = np.meshgrid(xs, zs)
+            dom = DOM.bilinear(gx.ravel(), gz.ravel()).reshape(gx.shape)
+            dtm = DTM.bilinear(gx.ravel(), gz.ravel()).reshape(gx.shape)
+            best = (0.0, 0.0)
+            if not np.isnan(dom).mean() > 0.2:
+                dom = np.nan_to_num(dom, nan=-50.0)
+                dtm = np.nan_to_num(dtm, nan=0.0)
+                even = np.abs(dom - (np.roll(dom, 2, 0) + np.roll(dom, -2, 0) + np.roll(dom, 2, 1) + np.roll(dom, -2, 1)) / 4) < 0.25
+                cand = (dom - dtm > 1.8).astype(np.float32)
+                even = (even & (cand > 0)).astype(np.float32)
+                inside = shapely.contains_xy(foot, gx.ravel(), gz.ravel()).reshape(gx.shape)
+                ring = shapely.contains_xy(foot.buffer(2.0), gx.ravel(), gz.ravel()).reshape(gx.shape) & ~inside
+                jj, ii = np.nonzero(inside)
+                rj, ri = np.nonzero(ring)
+                if len(jj) >= 12 and len(rj) >= 8:
+                    def score(dj, di):
+                        return float(cand[jj + dj, ii + di].mean()), float(cand[rj + dj, ri + di].mean())
+                    c0, r0 = score(0, 0)
+                    top, at, cov = c0 - 0.6 * r0, (0, 0), c0
+                    for dj in range(-10, 11):
+                        for di in range(-10, 11):
+                            c, r = score(dj, di)
+                            sc = c - 0.6 * r - 0.008 * math.hypot(dj, di)
+                            if sc > top:
+                                top, at, cov = sc, (dj, di), c
+                    # (what it is moved onto must be a roof: mostly standing, and even rather than leafy)
+                    if at != (0, 0) and top - (c0 - 0.6 * r0) >= 0.14 and cov >= 0.7 and math.hypot(*at) * S >= 0.75 \
+                            and float(even[jj + at[0], ii + at[1]].mean()) >= 0.4 * cov:
+                        best = (at[1] * S, at[0] * S)
+            cache[key] = best
+        dx, dz = cache[key]
+        if dx == 0.0 and dz == 0.0:
+            continue
+        there = shapely.affinity.translate(foot, dx, dz)
+        clash = [b for b in tree.query(there, predicate="intersects").tolist() if b not in members]
+        if any(there.intersection(polys[b]).area > 0.5 for b in clash):
+            continue
+        for a in members:
+            t_, q, i_ = buildings_raw[index[a]]
+            q = [(x + dx, z + dz) for x, z in q]
+            buildings_raw[index[a]] = (t_, q, i_)
+            d_bld.polygon(px(q), fill=255)
+        moved += len(members)
+    pickle.dump(cache, open(path, "wb"))
+    print("  outlines moved to where the laser has the building:", moved, "(groups measured this run: %d)" % tried)
+
+
+import shapely.affinity
+_register_outlines()
+
 # roads.bin (float32): per way [n, half width, kind, markings] then n x [x, z, sidewalk left, sidewalk right, height].
 # Kinds: 0 road, 1 raised sidewalk, 2 zebra crossing, 3 paved path. A sidewalk stops where another road,
 # a driveway or a building is in its way. The ground is graded to each road first, so that a road is level
@@ -554,6 +653,55 @@ for kind, pts in waterways:
         H1[j0:j1, i0:i1] = np.minimum(win, win * (1 - wt) + (ba + (bb - ba) * t) * wt)
     rivers.append([half, 1.0 if kind == "river" else 0.0, [(x, z, max(float(b) + 0.32, 0.02)) for (x, z), b in zip(st, bed)]])
 
+# Sidewalks by one rule. The map gives them in two ways: as a mark on the road ("sidewalk on the left") and as
+# lines of their own. Where a drawn line runs along a road for most of that road's length, it IS that road's
+# sidewalk: the road is marked instead and the line dropped, so the walk lies against the asphalt at one width
+# and is never there twice.
+_sw_roads = [w for w in road_ways if w[0] == 0 and len(w[5]) >= 2 and id(w[5]) not in pedestrian_ids]
+_sw_lines = [LineString(w[5]) for w in _sw_roads]
+_sw_tree = shapely.STRtree(_sw_lines) if _sw_lines else None
+_cover = {}                                               # (road index, side) -> [[from, to] along the road, the drawn lines]
+for wi, w in enumerate(road_ways):
+    if w[0] != 1 or len(w[5]) < 2 or _sw_tree is None:
+        continue
+    line = LineString(w[5])
+    if line.length < 4.0:
+        continue
+    P = [line.interpolate(d) for d in np.arange(1.0, line.length, 2.0)] or [line.interpolate(0.5, normalized=True)]
+    best = None
+    for ri in _sw_tree.query(line.buffer(8.0)):
+        rl, half = _sw_lines[ri], _sw_roads[ri][1]
+        d = np.array([rl.distance(q) for q in P])
+        frac = float(((d > half - 0.8) & (d < half + 4.5)).mean())
+        if frac >= 0.6 and (best is None or frac > best[0]):
+            best = (frac, int(ri))
+    if best is None:
+        continue
+    ri = best[1]
+    rl = _sw_lines[ri]
+    mid = P[len(P) // 2]
+    at = rl.project(mid)
+    pa, pb = rl.interpolate(max(at - 0.5, 0.0)), rl.interpolate(min(at + 0.5, rl.length))
+    left_of_xz = (pb.x - pa.x) * (mid.y - pa.y) - (pb.y - pa.y) * (mid.x - pa.x) > 0
+    side_i = 4 if left_of_xz else 3                       # (left of travel is the right-hand side in (x, z) terms)
+    s = sorted(rl.project(q) for q in P)
+    c = _cover.setdefault((ri, side_i), [[], []])
+    c[0].append((s[0], s[-1]))
+    c[1].append(wi)
+_drop = set()
+n_sw_marked = 0
+for (ri, side_i), (spans, lines_) in _cover.items():
+    w = _sw_roads[ri]
+    covered = unary_union([shapely.box(a, 0, b, 1) for a, b in spans]).area if spans else 0.0
+    if w[side_i]:
+        _drop.update(lines_)                              # there twice
+    elif covered >= 0.6 * _sw_lines[ri].length:
+        w[side_i] = True
+        _drop.update(lines_)
+        n_sw_marked += 1
+road_ways = [w for wi, w in enumerate(road_ways) if wi not in _drop]
+print("  drawn sidewalks taken as their road's own:", len(_drop), "roads marked:", n_sw_marked)
+del _sw_roads, _sw_lines, _sw_tree, _cover, _drop
 print("grading roads…")
 # Every road, sidewalk and paved path is pressed into the 1 m ground: level across its width (and its
 # sidewalks), following its own evened-out profile along, and blended back into the hillside beside it.
@@ -798,7 +946,18 @@ for w in road_ways:
         if g.geom_type == "LineString" and g.length >= 0.4:
             _ways.append([3, 1.1, 0, False, False, [(float(x), float(z)) for x, z in g.coords], False])
 road_ways = _ways
-print("  crossings trimmed to the asphalt:", n_cut, "dropped (no road under them):", n_gone)
+# one crossing, one set of bars: a crossing lying on another (mapped twice, or as a line and as a point) goes
+_zk, _zdrop = [], set()
+for wi, w in enumerate(road_ways):
+    if w[0] != 2 or len(w[5]) < 2:
+        continue
+    zl = LineString(w[5])
+    if any(zl.distance(o) < 1.6 and zl.interpolate(0.5, normalized=True).distance(o) < 2.5 for o in _zk):
+        _zdrop.add(wi)
+    else:
+        _zk.append(zl)
+road_ways = [w for wi, w in enumerate(road_ways) if wi not in _zdrop]
+print("  crossings trimmed to the asphalt:", n_cut, "dropped (no road under them):", n_gone, "lying on another:", len(_zdrop))
 road_st = [stations(w[5]) for w in road_ways]
 road_h = [profile(st, w[1] if w[0] == 0 else 0.0) for w, st in zip(road_ways, road_st)]
 w_sum = np.zeros((FH, FW), np.float32)
@@ -832,6 +991,7 @@ for w, st, hs in zip(road_ways, road_st, road_h):
         np.maximum(w_max[j0:j1, i0:i1], wt, out=w_max[j0:j1, i0:i1])
 grade = (w_sum > 0) & (H1 > 0.5)
 H1 = np.where(grade, H1 * (1 - w_max) + hw_sum / np.maximum(w_sum, 1e-6) * w_max, H1).astype(np.float32)
+graded = w_max >= 0.98                                    # the ground here is a road's own, level across
 del w_sum, hw_sum, w_max, grade
 
 # Where three or more stretches of road meet is a junction; lane markings stop short of it.
@@ -920,6 +1080,7 @@ while _merged:
 _road_decks = [c for c in _chains if c is not None and c[0] > 2.0 and len(c[2]) >= 2]
 _town_roads = unary_union([LineString(w[5]) for w in road_ways if w[0] == 0 and len(w[5]) >= 2])
 n_absorbed = 0
+_road_half0 = {id(c): c[0] for c in _road_decks}
 for k, c in enumerate(_chains):
     if c is None or c[0] > 2.0 or len(c[2]) < 2:
         continue
@@ -929,6 +1090,15 @@ for k, c in enumerate(_chains):
         near = line.intersection(rl.buffer(r[0] + 2 * c[0] + 1.5)).length
         if near > 0.6 * line.length:
             r[0] = max(r[0], max(rl.distance(shapely.Point(q)) for q in c[2]) + c[0])
+            # which side of the road it lies on (left of the road's direction is positive): the deck grows that way only
+            if len(r) == 3:
+                r += [-_road_half0[id(r)], _road_half0[id(r)]]
+            for q in c[2]:
+                at = rl.project(shapely.Point(q))
+                pa, pb = rl.interpolate(max(at - 0.5, 0.0)), rl.interpolate(min(at + 0.5, rl.length))
+                side_ = (pb.x - pa.x) * (q[1] - pa.y) - (pb.y - pa.y) * (q[0] - pa.x)
+                d_ = rl.distance(shapely.Point(q)) * (1.0 if side_ > 0 else -1.0)
+                r[3], r[4] = min(r[3], d_ - c[0]), max(r[4], d_ + c[0])
             _chains[k] = None
             n_absorbed += 1
             break
@@ -944,11 +1114,20 @@ for c in _chains:
     # another road joining at the bridge: then it is left as the map has it, neither longer nor walled in,
     # or the deck and its parapets would stand across the side road
     _own = LineString(c[2])
+    _along = np.subtract(c[2][-1], c[2][0]) / max(math.dist(c[2][-1], c[2][0]), 1e-6)
+
+    def _crosses(w):
+        """Does this road come up to the bridge from the side? Judged by the way it runs where it is nearest."""
+        wl = LineString(w[5])
+        if wl.distance(_own) >= c[0] + w[1] + 6.0:
+            return False
+        at = wl.project(shapely.ops.nearest_points(wl, _own)[0])
+        qa, qb = wl.interpolate(max(at - 4.0, 0.0)), wl.interpolate(min(at + 4.0, wl.length))
+        ln_ = math.hypot(qb.x - qa.x, qb.y - qa.y)
+        return ln_ > 0.5 and abs(np.dot([(qb.x - qa.x) / ln_, (qb.y - qa.y) / ln_], _along)) < 0.8
+
     joined = any(w[0] == 0 and len(w[5]) >= 2 and not any(math.dist(q0, q1) < 0.5 for q0 in (w[5][0], w[5][-1]) for q1 in (c[2][0], c[2][-1]))
-                 and LineString(w[5]).distance(_own) < c[0] + w[1] + 6.0
-                 and abs(np.dot(np.subtract(w[5][-1], w[5][0]) / max(math.dist(w[5][-1], w[5][0]), 1e-6),
-                                np.subtract(c[2][-1], c[2][0]) / max(math.dist(c[2][-1], c[2][0]), 1e-6))) < 0.8
-                 for w in road_ways)
+                 and _crosses(w) for w in road_ways)
     if joined:
         continue
     for end in (0, -1):
@@ -963,6 +1142,21 @@ for c in _chains:
     if length < 45.0:
         c[1] = int(c[1]) % 16 + 16
 print("  footbridges taken into the road bridge beside them:", n_absorbed)
+# A deck that took in a footbridge on one side only is not widened on the other: its line moves over to the
+# middle of what it carries (and the yellow line, which would no longer be in the middle of the road, is left out).
+for c in _chains:
+    if c is None or len(c) < 5:
+        continue
+    lo, hi = c[3], c[4]
+    del c[3:]
+    if abs(lo + hi) / 2 > 0.3:
+        moved = LineString(c[2]).offset_curve((lo + hi) / 2)
+        if moved.geom_type == "LineString" and len(moved.coords) >= 2:
+            pts_ = [(float(x), float(z)) for x, z in moved.coords]
+            if math.dist(pts_[0], c[2][0]) > math.dist(pts_[-1], c[2][0]):
+                pts_.reverse()
+            c[2], c[0] = pts_, (hi - lo) / 2
+            c[1] = (int(c[1]) // 16) * 16
 # Where a road must give way — it runs into a wider road, or into a roundabout — a row of white triangles is
 # painted across its lane (kind 6: from the middle of the road, or its left edge if one-way, to its right edge).
 round_keys = {(round(q[0], 2), round(q[1], 2)) for pts, _h in round_lines for q in pts}
@@ -986,6 +1180,7 @@ for w in road_ways:
                 _widest[key] = max(_widest.get(key, 0.0), w[1])
                 if tg.get("name"):
                     _names_at.setdefault(key, set()).add(tg["name"])
+_zebras_now = shapely.STRtree([LineString(w[5]) for w in road_ways if w[0] == 2 and len(w[5]) >= 2] or [LineString([(1e9, 1e9), (1e9 + 1, 1e9)])])
 approaches = []       # every road end at a junction: [end, direction of travel toward it, half width, how far back the line is, tags, kind of duty]
 for w in road_ways:
     if w[0] != 0 or len(w[5]) < 2 or id(w[5]) in round_ids:
@@ -1015,7 +1210,9 @@ for w in road_ways:
             rx, rz = -dz, dx                                    # to the right of travel
             lo = -w[1] + 0.3 if oneway else 0.15
             pa, pb = (bx + rx * lo, bz + rz * lo), (bx + rx * (w[1] - 0.3), bz + rz * (w[1] - 0.3))
-            if inside(pa[0], pa[1], 10) and inside(pb[0], pb[1], 10) and not any(math.hypot(pa[0] - qx, pa[1] - qz) < qr for qx, qz, qr in overrides.NO_MARKINGS):
+            # (not where a pedestrian crossing lies: its bars and the triangles would be painted into each other)
+            if inside(pa[0], pa[1], 10) and inside(pb[0], pb[1], 10) and not any(math.hypot(pa[0] - qx, pa[1] - qz) < qr for qx, qz, qr in overrides.NO_MARKINGS) \
+                    and not len(_zebras_now.query(LineString([pa, pb]), predicate="dwithin", distance=2.6)):
                 road_out.extend([2.0, 0.3, 6.0, 0.0, pa[0], pa[1], 0.0, 0.0, height_at(*pa), pb[0], pb[1], 0.0, 0.0, height_at(*pb)])
 
 for pts in runways:                                       # kind 5: a runway's paint
@@ -1024,6 +1221,57 @@ for pts in runways:                                       # kind 5: a runway's p
         road_out.extend([float(len(st)), 22.5, 5.0, 0.0])
         for x, z in st:
             road_out.extend([x, z, 0.0, 0.0, height_at(x, z)])
+# Nothing comes up through a road deck. The ground under it is held at or below the deck (well below, away
+# from its edges), so that no bank, road or kerb the deck spans stands up through the asphalt; further down,
+# the sidewalks stop at the deck and the stream under it is kept below it.
+def _deck_height(st, hs, x, z):
+    """Height of a deck (stations and their heights) at the points x, z: that of the nearest spot on its line."""
+    best = np.full(np.shape(x), 1e18)
+    out = np.zeros(np.shape(x))
+    for (xa, za), (xb, zb), ya, yb in zip(st, st[1:], hs, hs[1:]):
+        dx, dz = xb - xa, zb - za
+        t = np.clip(((x - xa) * dx + (z - za) * dz) / max(dx * dx + dz * dz, 1e-9), 0.0, 1.0)
+        d = (x - xa - t * dx) ** 2 + (z - za - t * dz) ** 2
+        near = d < best
+        best = np.where(near, d, best)
+        out = np.where(near, ya + (yb - ya) * t, out)
+    return out
+
+
+road_decks = []       # [stations, their heights, the deck's outline and a bit, half width] of every road bridge
+_deck_ends = {}
+for ch in _chains:
+    if ch is None:
+        continue
+    st = stations(ch[2], 3.0)
+    if len(st) < 2 or not all(inside(x, z, 5) for x, z in st):
+        continue
+    ha, hb = max(height_at(*st[0]), 0.6), max(height_at(*st[-1]), 0.6)
+    _deck_ends[id(ch)] = (ha, hb)
+    if ch[0] > 2.0:
+        road_decks.append([st, [ha + (hb - ha) * i / (len(st) - 1) for i in range(len(st))], None, ch[0]])
+for dk in road_decks:
+    st, hs, _none, half = dk
+    line = LineString(st)
+    dk[2] = line.buffer(half + 1.0, cap_style="flat")
+    inner = shapely.ops.substring(line, 1.5, line.length - 1.5).buffer(half - 1.5, cap_style="flat") if line.length > 4.0 and half > 2.0 else None
+    x0, z0, x1, z1 = dk[2].bounds
+    i0, i1, j0, j1 = int(x0 - X0), int(x1 - X0) + 2, int(z0 - Z0), int(z1 - Z0) + 2
+    gx, gz = np.meshgrid(X0 + np.arange(i0, i1, dtype=float), Z0 + np.arange(j0, j1, dtype=float))
+    top = _deck_height(st, hs, gx, gz)
+    limit = np.where(shapely.contains_xy(dk[2], gx, gz), top - 0.05, 1e9)
+    if inner is not None and not inner.is_empty:
+        limit = np.where(shapely.contains_xy(inner, gx, gz), top - 0.6, limit)
+    was = H1[j0:j1, i0:i1].copy()
+    win = np.where(was > 0.5, np.minimum(was, np.maximum(limit, 0.5)), was)
+    # paint on the road that carries on onto the deck (a crossing, give-way marks) lies on the deck: there the
+    # ground is brought right up under it, if it was about that high already (not where the deck is in the air)
+    _paint = [LineString(w[5]).buffer(2.5) for w in road_ways if w[0] in (2, 6) and len(w[5]) >= 2 and LineString(w[5]).intersects(dk[2])]
+    if _paint:
+        on = shapely.contains_xy(unary_union(_paint).intersection(line.buffer(half + 0.3, cap_style="flat")), gx, gz)
+        win = np.where(on & (was > top - 0.2), top, win)
+    H1[j0:j1, i0:i1] = win.astype(np.float32)
+print("  road decks with the ground held under them:", len(road_decks))
 n_bridges = 0
 # Decks lying side by side (a road bridge and the footbridge next to it) get no railing between them:
 # the third number of a deck point says which sides are open (1 = left of travel, 2 = right, 3 = both).
@@ -1035,7 +1283,7 @@ for ch in _chains:
     st = stations(ch[2], 3.0)
     if len(st) < 2 or not all(inside(x, z, 5) for x, z in st):
         continue
-    ha, hb = max(height_at(*st[0]), 0.6), max(height_at(*st[-1]), 0.6)
+    ha, hb = _deck_ends[id(ch)]
     road_out.extend([float(len(st)), ch[0], 4.0, float(ch[1])])
     for i, (x, z) in enumerate(st):
         (xa, za), (xb, zb) = st[max(i - 1, 0)], st[min(i + 1, len(st) - 1)]
@@ -1076,7 +1324,7 @@ for kind, half, mark, left, right, pts, burn in road_ways:
         if right:
             _side.append(line.buffer(half + 2.0, single_sided=True, quad_segs=2).buffer(0))
     elif kind == 1:
-        _side.append(line.buffer(1.1, quad_segs=2, cap_style="flat"))
+        _side.append(line.buffer(1.0, quad_segs=2, cap_style="flat"))     # two metres wide, as beside a road
 # the island in the middle of a roundabout: a kerbed ring of paving, grass inside it
 if round_lines:
     for ring in polygonize(unary_union([LineString(pts) for pts, _h in round_lines])):
@@ -1135,8 +1383,8 @@ for _t, _pts, _id in buildings_raw:
     if len(_pts) >= 3 and poly.is_valid and poly.area < 60 and shapely.intersects(_core_sw, poly) and poly.intersection(_core_sw).area > 0.15:
         rest = poly.difference(_core_sw_wide).buffer(-0.4).buffer(0.4, join_style="mitre")
         rest = max(getattr(rest, "geoms", [rest]), key=lambda g: g.area) if not rest.is_empty else rest
-        if rest.is_empty or rest.geom_type != "Polygon" or rest.area < 0.55 * poly.area or rest.area < 8:
-            n_bgone += 1
+        if rest.is_empty or rest.geom_type != "Polygon" or rest.area < 0.55 * poly.area or rest.area < 8 or rest.buffer(-1.1).is_empty:
+            n_bgone += 1                                   # (a strip under 2.2 m wide is no building)
         else:
             _kept.append((_t, [(float(x), float(z)) for x, z in rest.simplify(0.2).exterior.coords[:-1]], _id))
             n_btrim += 1
@@ -1150,13 +1398,40 @@ for _t, _pts, _id in buildings_raw:
         continue
     rest = poly.difference(_core_wide).buffer(-0.4).buffer(0.4, join_style="mitre")
     rest = max(getattr(rest, "geoms", [rest]), key=lambda g: g.area) if not rest.is_empty else rest
-    if rest.is_empty or rest.geom_type != "Polygon" or rest.area < 0.55 * poly.area or rest.area < 10:
+    if rest.is_empty or rest.geom_type != "Polygon" or rest.area < 0.55 * poly.area or rest.area < 10 or rest.buffer(-1.1).is_empty:
         n_bgone += 1
         continue
     _kept.append((_t, [(float(x), float(z)) for x, z in rest.simplify(0.2).exterior.coords[:-1]], _id))
     n_btrim += 1
 buildings_raw = _kept
 print("  buildings in a road: removed", n_bgone, "trimmed", n_btrim)
+# No two buildings stand in each other: one that lies mostly inside another (a part drawn twice) is left out,
+# and where two merely overlap the smaller gives way.
+_bp = [SPoly(q) if len(q) >= 3 else None for _t, q, _i in buildings_raw]
+_bp = [(g if g.is_valid else g.buffer(0)) if g is not None else SPoly() for g in _bp]
+_bt = shapely.STRtree(_bp)
+_ia, _ib = _bt.query(_bp, predicate="intersects")
+_gone, _n_cut = set(), 0
+for _a, _b in zip(_ia.tolist(), _ib.tolist()):
+    if _a >= _b or _a in _gone or _b in _gone:
+        continue
+    _ov = _bp[_a].intersection(_bp[_b]).area
+    if _ov <= 1.0:
+        continue
+    _sm, _lg = (_a, _b) if _bp[_a].area < _bp[_b].area else (_b, _a)
+    if _ov > 0.6 * _bp[_sm].area:
+        _gone.add(_sm)
+        continue
+    _rest = _bp[_sm].difference(_bp[_lg].buffer(0.05))
+    _rest = max(getattr(_rest, "geoms", [_rest]), key=lambda g: g.area) if not _rest.is_empty else _rest
+    if _rest.is_empty or _rest.geom_type != "Polygon" or _rest.area < 8:
+        _gone.add(_sm)
+        continue
+    _bp[_sm] = _rest
+    buildings_raw[_sm] = (buildings_raw[_sm][0], [(float(x), float(z)) for x, z in _rest.simplify(0.1).exterior.coords[:-1]], buildings_raw[_sm][2])
+    _n_cut += 1
+buildings_raw = [b for k, b in enumerate(buildings_raw) if k not in _gone]
+print("  buildings standing in each other: left out", len(_gone), "cut back", _n_cut)
 _blds = []
 for _t, _pts, _id in buildings_raw:
     poly = SPoly(_pts)
@@ -1164,12 +1439,24 @@ for _t, _pts, _id in buildings_raw:
         _blds.append(poly)
 bld_union = unary_union(_blds)
 map_box = shapely.box(X0 + 6, Z0 + 6, X1 - 6, Z1 - 6)
-road_all = unary_union(_all).buffer(2.5, quad_segs=3).buffer(-2.5, quad_segs=3).difference(bld_union.buffer(0.3)).intersection(map_box)
+road_all = unary_union(_all).buffer(2.5, quad_segs=3).buffer(-2.5, quad_segs=3).difference(bld_union.buffer(0.05)).intersection(map_box)
 drive = unary_union(_drive).buffer(2.5, quad_segs=3).buffer(-2.5, quad_segs=3)
 road_main = unary_union(_main).buffer(2.5, quad_segs=3).buffer(-2.5, quad_segs=3)
-side = unary_union(_side).buffer(0.8, quad_segs=2).buffer(-0.8, quad_segs=2).difference(road_main).difference(bld_union.buffer(0.2)).intersection(map_box)
+side = unary_union(_side).buffer(0.8, quad_segs=2).buffer(-0.8, quad_segs=2).difference(road_main).difference(bld_union.buffer(0.05)).intersection(map_box)
 side = unary_union([g for g in getattr(side, "geoms", [side]) if g.geom_type == "Polygon" and g.area > 3.0])
 side = side.difference(road_all.buffer(-0.05))             # where a road runs through a paved square, it is road
+# Paved foot and cycle paths are asphalt like the roads, laid and cut with them (not ribbons of their own):
+# every stretch of one that was to be drawn, at its own width. A path gives way to a sidewalk.
+_paths, _i, _ro = [], 0, np.asarray(road_out, np.float64)
+while _i + 4 <= len(_ro):
+    _n = int(_ro[_i])
+    if int(_ro[_i + 2]) == 3 and _n >= 2:
+        _paths.append(LineString(_ro[_i + 4:_i + 4 + _n * 5].reshape(_n, 5)[:, :2]).buffer(float(_ro[_i + 1]), quad_segs=3))
+    _i += 4 + _n * 5
+if _paths:
+    _pp = unary_union(_paths).difference(bld_union.buffer(0.05)).difference(side).intersection(map_box)
+    print("  paved paths laid as asphalt: %d stretches, %.0f m2" % (len(_paths), _pp.area))
+    road_all = unary_union([road_all, _pp])
 # asphalt where someone who knows the place says there is asphalt: the open ground round each point
 _fills = []
 for x, z, r in overrides.ASPHALT_AT:
@@ -1182,48 +1469,185 @@ for x, z, r in overrides.KERB_OPENINGS:
     _fills.append(gap.intersection(side.buffer(0.3)))
     side = side.difference(gap)
 if _fills:
-    road_all = unary_union([road_all] + _fills).buffer(0.6).buffer(-0.6).difference(bld_union.buffer(0.3)).intersection(map_box)
+    road_all = unary_union([road_all] + _fills).buffer(0.6).buffer(-0.6).difference(bld_union.buffer(0.05)).intersection(map_box)
     side = side.difference(road_all.buffer(-0.05))
+# the asphalt that is laid on the ground: the same, without the thin spikes and slivers that the cutting-out of
+# buildings and the melting-together of shapes leave along its edge
+road_laid = road_all.buffer(-0.6, quad_segs=3).buffer(0.6, quad_segs=3)
+if road_decks:                                             # a road deck is its own asphalt, from side to side
+    _deck_area = unary_union([LineString(dk[0]).buffer(dk[3] + 0.3, cap_style="flat") for dk in road_decks])
+    side = side.difference(_deck_area)
+    # a scrap of sidewalk left standing against a deck (a corner the deck did not quite take) goes too
+    side = unary_union([g for g in getattr(side, "geoms", [side]) if g.geom_type == "Polygon" and (g.area > 20.0 or g.distance(_deck_area) > 0.5)])
+    road_laid = road_laid.difference(_deck_area)
 side = unary_union([g for g in getattr(side, "geoms", [side]) if g.geom_type == "Polygon" and g.area > 3.0])
+# No slits and no pinholes: a strip of ground under about two metres wide between two paved surfaces (or between
+# paving and a wall), and a small patch wholly closed in by paving, is paved over with asphalt.
+_pv = unary_union([road_laid, side] + ([_deck_area] if road_decks else []))
+shapely.prepare(_pv)
+_ba = np.asarray(_blds, dtype=object)
+_walls = unary_union(list(_ba[shapely.dwithin(_ba, _pv, 1.3)])).buffer(0.02)       # the buildings that stand at the paving
+_shut = unary_union([_pv, _walls])
+_fill = [_shut.buffer(0.9, quad_segs=3).buffer(-0.9, quad_segs=3).difference(_shut)]
+_isles = []
+for _p in getattr(_pv, "geoms", [_pv]):
+    for _ring in _p.interiors:
+        _h = SPoly(_ring)
+        if _h.area < 14.0 or 4.0 * _h.area / _h.length < 2.2:
+            if _h.area >= 3.0 and not _h.buffer(-0.6).is_empty and _h.distance(side) > 0.3:
+                _isles.append(_h)                          # a traffic island: kerbed paving, not asphalt
+            else:
+                _fill.append(_h)
+_fill = unary_union(_fill).difference(_walls).difference(side)
+if _isles:
+    _fill = _fill.difference(unary_union(_isles))
+if road_decks:
+    _fill = _fill.difference(_deck_area)
+_fill = unary_union([g for g in getattr(_fill, "geoms", [_fill]) if g.geom_type == "Polygon" and g.area > 0.01]).intersection(map_box)
+# each piece takes after what it lies against most: slabs beside a sidewalk, asphalt beside a road
+_to_side, _to_road = [], []
+_sp, _rp = list(getattr(side, "geoms", [side])), list(getattr(road_laid, "geoms", [road_laid]))
+_st, _rt = shapely.STRtree(_sp), shapely.STRtree(_rp)
+for _g in getattr(_fill, "geoms", [_fill]):
+    _rim = _g.buffer(0.12)
+    _as = sum(_rim.intersection(_sp[i]).area for i in _st.query(_rim))
+    _ar = sum(_rim.intersection(_rp[i]).area for i in _rt.query(_rim))
+    if _as + _ar > 0.0:                                    # (a nook between two walls that touches no paving stays as it is)
+        (_to_side if _as > _ar else _to_road).append(_g)
+print("  slits and pinholes paved over: %.0f m2 (%d as asphalt, %d as sidewalk)" % (sum(g.area for g in _to_road + _to_side), len(_to_road), len(_to_side)))
+road_laid = unary_union([road_laid] + _to_road)
+road_all = unary_union([road_all] + _to_road)
+side = unary_union([side] + _to_side + _isles)
+print("  traffic islands kept as kerbed paving:", len(_isles))
+
+# A gravel path is not drawn across paving: where its line runs over asphalt or a sidewalk, the path stops at
+# the edge and takes up again on the far side. The paved paths are in the asphalt already. (roads.bin was
+# written before the paving was known; it is redone here.)
+_onp = unary_union([road_laid, side])
+_onp_wide = _onp.buffer(0.9, quad_segs=2)
+shapely.prepare(_onp); shapely.prepare(_onp_wide)
+_ro, _out, _i, _n_cut, _n_gone = np.asarray(road_out, np.float64), [], 0, 0, 0
+while _i + 4 <= len(_ro):
+    _n = int(_ro[_i])
+    _head, _rows = _ro[_i:_i + 4], _ro[_i + 4:_i + 4 + _n * 5].reshape(_n, 5)
+    _i += 4 + _n * 5
+    if int(_head[2]) == 3:
+        _n_gone += 1
+        continue
+    if int(_head[2]) != 7 or _n < 2:
+        _out.append(_head); _out.append(_rows.ravel())
+        continue
+    _ln = LineString(_rows[:, :2])
+    if not shapely.intersects(_onp, _ln):
+        _out.append(_head); _out.append(_rows.ravel())
+        continue
+    _n_cut += 1
+    _d = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(_rows[:, 0]), np.diff(_rows[:, 1])))])
+    _rest = _ln.difference(_onp)
+    for _part in getattr(_rest, "geoms", [_rest]):
+        if _part.geom_type != "LineString" or _part.length < 1.0:
+            continue
+        if _part.length < 12.0 and _part.intersection(_onp_wide).length > 0.6 * _part.length:
+            continue                                       # a stub left running along the edge of the asphalt
+        _c = np.asarray(_part.coords)
+        _at = shapely.line_locate_point(_ln, shapely.points(_c))
+        _k = np.clip(np.searchsorted(_d, _at), 0, _n - 1)
+        _run = np.stack([_c[:, 0], _c[:, 1], _rows[_k, 2], _rows[_k, 3], np.interp(_at, _d, _rows[:, 4])], 1)
+        _out.append(np.array([len(_run), _head[1], _head[2], _head[3]])); _out.append(_run.ravel())
+np.concatenate(_out).astype(np.float32).tofile(os.path.join(OUT, "roads.bin"))
+print("  gravel paths cut at the edge of paving:", _n_cut, " paved path ribbons no longer drawn:", _n_gone)
+
+# kept for the road sweep (tools/sweep.py), which compares these outlines with pictures of the finished ground
+import pickle as _pk
+_pk.dump({"road_all": shapely.to_wkb(road_all), "road_laid": shapely.to_wkb(road_laid), "side": shapely.to_wkb(side),
+          "drive": shapely.to_wkb(drive), "deck": shapely.to_wkb(_deck_area) if road_decks else None,
+          "buildings": shapely.to_wkb(bld_union)}, open(os.path.join(DATA, "paved_expect.pkl"), "wb"))
 
 
-def triangles(poly, step=2.6):
-    """Cut a polygon into triangles no bigger than about `step`, so they can follow the ground."""
-    poly = poly.segmentize(step * 0.6)
-    pts = [shapely.get_coordinates(poly)]
+def triangles(poly, step=2.5):
+    """Cut a polygon into triangles no bigger than about `step`, so they can follow the ground. The cut is
+    exact: the polygon is laid over a square grid (the same grid everywhere, so neighbours share corners), whole
+    squares become two triangles and the squares its outline runs through are cut to the outline. Nothing is
+    left out along the edge and nothing reaches over it."""
     x0, z0, x1, z1 = poly.bounds
-    gx, gz = np.meshgrid(np.arange(x0 + 1.0, x1, step), np.arange(z0 + 1.0, z1, step))
+    gx, gz = np.meshgrid(np.arange(math.floor(x0 / step) * step, x1, step), np.arange(math.floor(z0 / step) * step, z1, step))
     gx, gz = gx.ravel(), gz.ravel()
-    keep = shapely.contains_xy(poly.buffer(-0.7), gx, gz)
-    pts.append(np.stack([gx[keep], gz[keep]], 1))
-    tri = shapely.get_parts(shapely.delaunay_triangles(MultiPoint(np.concatenate(pts))))
-    if len(tri) == 0:
+    if not len(gx):
         return np.zeros((0, 6), np.float32)
-    co = shapely.get_coordinates(tri).reshape(-1, 4, 2)[:, :3]
-    cen = co.mean(1)
-    return co[shapely.contains_xy(poly, cen[:, 0], cen[:, 1])].reshape(-1, 6).astype(np.float32)
+    boxes = shapely.box(gx, gz, gx + step, gz + step)
+    shapely.prepare(poly)
+    whole = shapely.contains(poly, boxes)
+    out = []
+    if whole.any():
+        ax, az = gx[whole], gz[whole]
+        bx, bz = ax + step, az + step
+        out.append(np.stack([ax, az, bx, az, bx, bz], 1))
+        out.append(np.stack([ax, az, bx, bz, ax, bz], 1))
+    part = ~whole & shapely.intersects(poly, boxes)
+    if part.any():
+        cut = shapely.intersection(poly, boxes[part])
+        cut = shapely.get_parts(cut)
+        cut = cut[(shapely.get_type_id(cut) == 3) & (shapely.area(cut) > 0.002)]
+        if len(cut):
+            tri = shapely.get_parts(shapely.constrained_delaunay_triangles(cut))
+            tri = shapely.get_parts(tri)
+            tri = tri[shapely.get_type_id(tri) == 3]
+            if len(tri):
+                out.append(shapely.get_coordinates(tri).reshape(-1, 4, 2)[:, :3].reshape(-1, 6))
+    if not out:
+        return np.zeros((0, 6), np.float32)
+    co = np.concatenate(out).reshape(-1, 3, 2)
+    area = np.abs((co[:, 1, 0] - co[:, 0, 0]) * (co[:, 2, 1] - co[:, 0, 1]) - (co[:, 1, 1] - co[:, 0, 1]) * (co[:, 2, 0] - co[:, 0, 0])) / 2
+    return co[area > 0.004].reshape(-1, 6).astype(np.float32)
 
 
 def pieces(lines, solid):
-    """Boundary lines as short pieces [x, z, x, z] with the open side (not `solid`) to the right."""
+    """Boundary lines as short pieces [x, z, x, z, and the way out at each end (x, z twice)] with the open side
+    (not `solid`) to the right. The way out at a corner is the mean of the two pieces meeting there, so what
+    is hung on the edge (a kerb, a shoulder) runs round bends in one piece instead of fanning out in flaps."""
     out = []
     for ln in getattr(lines, "geoms", [lines]):
         if ln.is_empty or ln.geom_type not in ("LineString", "LinearRing"):
             continue
         co = shapely.get_coordinates(ln.segmentize(3.0))
+        if len(co) >= 2:
+            keep = np.concatenate([[True], np.hypot(*(co[1:] - co[:-1]).T) > 0.02])
+            co = co[keep]
         if len(co) < 2:
             continue
         a, b = co[:-1], co[1:]
         d = b - a
         ln2 = np.hypot(d[:, 0], d[:, 1])
-        ok = ln2 > 0.02
-        a, b, d, ln2 = a[ok], b[ok], d[ok], ln2[ok]
         right = np.stack([d[:, 1], -d[:, 0]], 1) / ln2[:, None]
         mid = (a + b) / 2 + right * 0.15
         flip = shapely.contains_xy(solid, mid[:, 0], mid[:, 1])
-        seg = np.concatenate([np.where(flip[:, None], b, a), np.where(flip[:, None], a, b)], 1)
-        out.append(seg)
-    return np.concatenate(out).astype(np.float32) if out else np.zeros((0, 4), np.float32)
+        nrm = np.where(flip[:, None], -right, right)               # out of the solid, per piece
+        closed = len(co) > 3 and np.hypot(*(co[0] - co[-1])) < 0.02
+        prev_n = np.roll(nrm, 1, 0)
+        next_n = np.roll(nrm, -1, 0)
+        if not closed:
+            prev_n[0], next_n[-1] = nrm[0], nrm[-1]
+        n0 = nrm + prev_n
+        n1 = nrm + next_n
+        for q, own in ((n0, nrm), (n1, nrm)):
+            l_ = np.hypot(q[:, 0], q[:, 1])
+            bad = l_ < 0.3                                          # a hairpin: keep the piece's own way out
+            q[bad] = own[bad]
+            l_[bad] = 1.0
+            q /= l_[:, None]
+        sa, sb = np.where(flip[:, None], b, a), np.where(flip[:, None], a, b)
+        na, nb = np.where(flip[:, None], n1, n0), np.where(flip[:, None], n0, n1)
+        out.append(np.concatenate([sa, sb, na, nb], 1))
+    return np.concatenate(out).astype(np.float32) if out else np.zeros((0, 8), np.float32)
+
+
+def pieces_laid(q):
+    """Edge pieces with their heights: [x, y, z, out x, out z] for each end."""
+    q = np.asarray(q, np.float64)
+    if not len(q):
+        return np.zeros((0, 10), np.float32)
+    ya, yb = heights(q[:, 0], q[:, 1]), heights(q[:, 2], q[:, 3])
+    return np.stack([q[:, 0], ya, q[:, 1], q[:, 4], q[:, 5], q[:, 2], yb, q[:, 3], q[:, 6], q[:, 7]], 1).astype(np.float32)
 
 
 def cells_of(geom):
@@ -1244,23 +1668,6 @@ def cells_of(geom):
                         yield (cx, cz), part
 
 
-paved = {}
-for name, geom in (("A", road_all), ("S", side)):
-    for key, part in cells_of(geom):
-        tris = [triangles(g) for g in getattr(part, "geoms", [part]) if g.geom_type == "Polygon" and g.area > 0.05]
-        if tris:
-            paved.setdefault(key, {})[name] = np.concatenate(tris)
-for name, lines, solid in (("K", side.boundary, side), ("E", road_all.boundary.difference(side.buffer(0.4)), road_all)):
-    for key, part in cells_of(lines):
-        seg = pieces(part, solid)
-        if len(seg):
-            paved.setdefault(key, {})[name] = seg
-with open(os.path.join(OUT, "paved.bin"), "wb") as f:
-    for (cx, cz), d in sorted(paved.items()):
-        parts = [d.get(k, np.zeros((0, 6 if k in "AS" else 4), np.float32)) for k in "ASKE"]
-        f.write(np.asarray([cx, cz] + [len(q) for q in parts], np.float32).tobytes())
-        for q in parts:
-            f.write(q.astype(np.float32).tobytes())
 # water.bin (float32): per stretch of running water [n, half width, 1 for a river] then n x [x, z, water level],
 # running downstream; a stretch stops where a road lies over it (a culvert). lakes.bin: per lake
 # [number of triangles, water level] then the triangles (x, z three times each).
@@ -1277,7 +1684,11 @@ for half, big_one, pts in rivers:
         if len(piece) >= 3:
             water_out += [float(len(piece)), half, big_one]
             for x, z, y in piece:
-                water_out += [x, z, min(y, height_at(x, z) + 0.45)]
+                y = min(y, height_at(x, z) + 0.45)
+                for dst, dhs, dpoly, _dh in road_decks:            # under a road deck: below it
+                    if dpoly.buffer(half + 1.0).contains(shapely.Point(x, z)):
+                        y = min(y, float(_deck_height(dst, dhs, np.float64(x), np.float64(z))) - 0.6)
+                water_out += [x, z, y]
             n_water += 1
         piece = []
 np.asarray(water_out, np.float32).tofile(os.path.join(OUT, "water.bin"))
@@ -1309,8 +1720,6 @@ if plaza_poly is not None:
         for g in getattr(_floor, "geoms", [_floor]):
             if g.geom_type == "Polygon" and g.area > 1.0:
                 plaza_tris += [round(float(v), 2) for v in triangles(g, 2.0).ravel()]
-print("  paved cells:", len(paved), "asphalt triangles:", sum(len(d.get("A", [])) for d in paved.values()),
-      "sidewalk triangles:", sum(len(d.get("S", [])) for d in paved.values()))
 
 # The terrace in front of the town hall: level with its entrance, and a flight of long steps down to the square
 # (the laser model has a smooth slope there). The ground under the steps is a ramp; the game builds the steps.
@@ -1357,15 +1766,270 @@ if _rh is not None and plaza_poly is not None:
 # A single cell standing tens of metres above all its neighbours is a fault in the data or in the working
 # of it, not ground: it would stand in the landscape as a pillar. Such cells take their neighbours' height.
 from scipy import ndimage as _ndi
+from scipy import ndimage
 _low = _ndi.minimum_filter(H1, size=5)
 _spike = H1 - _low > 25.0
 print("  pillars in the terrain removed:", int(_spike.sum()))
 H1[_spike] = _low[_spike]
 del _low, _spike
 
+
+# ---------------------------------------------------------------- the paved surfaces, laid
+# The ground is final now, and the asphalt and the sidewalks are laid on it here, once: every corner of every
+# triangle is given its height, and the game draws and drives on exactly that. Paved ground that no road has
+# levelled (a car park, a square, the filled-in corner of a junction) is evened out first: it takes the level
+# of the graded road beside it where there is one, and is otherwise smoothed, so that asphalt lies flat
+# instead of following every bump or climbing the bank beside it.
+H_SCALE, H_OFFSET, STRIP = 0.02, -40.0, 1000
+print("laying the paved surfaces…")
+_pm = Image.new("L", (FW, FH), 0)
+_pd = ImageDraw.Draw(_pm)
+for _geom in (road_all, side):
+    for g in getattr(_geom, "geoms", [_geom]):
+        if g.geom_type != "Polygon":
+            continue
+        _pd.polygon([(x - X0, z - Z0) for x, z in g.exterior.coords], fill=255)
+        for hole in g.interiors:
+            _pd.polygon([(x - X0, z - Z0) for x, z in hole.coords], fill=0)
+pmask = np.asarray(_pm) > 0
+del _pm, _pd
+_loose = pmask & ~graded & (H1 > 0.5)
+if _loose.any():
+    _src = (pmask & graded & (H1 > 0.5)).astype(np.float32)
+    _wg = ndimage.gaussian_filter(_src, 3.0)
+    _hg = ndimage.gaussian_filter(_src * H1, 3.0) / np.maximum(_wg, 1e-6)          # the graded road nearby
+    _self = (pmask & (H1 > 0.5)).astype(np.float32)
+    _ws = ndimage.gaussian_filter(_self, 2.0)
+    _hs = ndimage.gaussian_filter(_self * H1, 2.0) / np.maximum(_ws, 1e-6)          # the paved ground itself, smoothed
+    _t = np.clip(_wg / 0.25, 0.0, 1.0)
+    H1 = np.where(_loose, _hg * _t + _hs * (1 - _t), H1).astype(np.float32)
+    del _src, _wg, _hg, _self, _ws, _hs, _t
+print("  paved ground evened out:", int(_loose.sum()), "m2")
+del _loose
+# Paving does not lie in the sea. Where a quay, a pier or a shore road reaches out over ground at sea level,
+# the ground under it is brought up to the paved ground beside it (0.9 m at the least): the quay goes as far
+# as its paving. Under a bridge deck the water stays.
+_low = pmask & (H1 < 0.9)
+if road_decks:
+    _dm = Image.new("L", (FW, FH), 0)
+    _dd = ImageDraw.Draw(_dm)
+    for g in getattr(_deck_area.buffer(2.5), "geoms", [_deck_area.buffer(2.5)]):
+        _dd.polygon([(x - X0, z - Z0) for x, z in g.exterior.coords], fill=255)
+    _low &= ~(np.asarray(_dm) > 0)
+    del _dm, _dd
+if _low.any():
+    _dry = (pmask & (H1 >= 0.9)).astype(np.float32)
+    _wd = ndimage.gaussian_filter(_dry, 3.0)
+    _hd = ndimage.gaussian_filter(_dry * H1, 3.0) / np.maximum(_wd, 1e-6)
+    H1 = np.where(_low, np.where(_wd > 0.02, np.maximum(_hd, 0.9), 0.9), H1).astype(np.float32)
+    del _dry, _wd, _hd
+print("  paving brought up out of the water:", int(_low.sum()), "m2")
+del _low
+H1 = (np.clip(np.round((H1 - H_OFFSET) / H_SCALE), 0, 65535) * H_SCALE + H_OFFSET).astype(np.float32)      # as the game will read it
+# The paved surface has heights of its own, fixed here once: the paved ground, carried one step out past its
+# edge, so that the rim of the asphalt takes its height from the road and not from the bank beside it.
+# It is also a little smoother than the ground it was read from (a road has no dents a metre across).
+_m = pmask.astype(np.float32)
+_wm = ndimage.gaussian_filter(_m, 1.2)
+_hm = ndimage.gaussian_filter(_m * H1, 1.2)
+HS = np.where(pmask, _hm / np.maximum(_wm, 1e-6), H1).astype(np.float32)
+for _size in (5, 3):                                   # (two steps out; the nearer step from the nearer ground)
+    _wm = ndimage.uniform_filter(_m, _size)
+    _hm = ndimage.uniform_filter(_m * np.where(pmask, HS, 0.0), _size)
+    if _size == 5:
+        _far = np.where(pmask | (_wm < 0.02), HS, _hm / np.maximum(_wm, 1e-6))
+    else:
+        HS = np.where(pmask, HS, np.where(_wm < 0.05, _far, _hm / np.maximum(_wm, 1e-6))).astype(np.float32)
+del _m, _wm, _hm, _far
+
+
+def heights(x, z):
+    """Ground height at many points at once."""
+    fx = np.clip(np.asarray(x, np.float64) - X0, 0, FW - 1.001)
+    fz = np.clip(np.asarray(z, np.float64) - Z0, 0, FH - 1.001)
+    ix, iz = fx.astype(int), fz.astype(int)
+    tx, tz = fx - ix, fz - iz
+    return (H1[iz, ix] * (1 - tx) * (1 - tz) + H1[iz, ix + 1] * tx * (1 - tz) + H1[iz + 1, ix] * (1 - tx) * tz + H1[iz + 1, ix + 1] * tx * tz)
+
+
+def surface(x, z):
+    """Height of the paved surface at many points at once (before the game's lift)."""
+    fx = np.clip(np.asarray(x, np.float64) - X0, 0, FW - 1.001)
+    fz = np.clip(np.asarray(z, np.float64) - Z0, 0, FH - 1.001)
+    ix, iz = fx.astype(int), fz.astype(int)
+    tx, tz = fx - ix, fz - iz
+    return (HS[iz, ix] * (1 - tx) * (1 - tz) + HS[iz, ix + 1] * tx * (1 - tz) + HS[iz + 1, ix] * (1 - tx) * tz + HS[iz + 1, ix + 1] * tx * tz)
+
+
+def laid(x, z, step=2.5):
+    """Height of the asphalt as it is laid: flat between the corners of the 2.5 m squares it is cut into."""
+    x, z = np.asarray(x, np.float64), np.asarray(z, np.float64)
+    lx, lz = np.floor(x / step) * step, np.floor(z / step) * step
+    tx, tz = (x - lx) / step, (z - lz) / step
+    return (surface(lx, lz) * (1 - tx) * (1 - tz) + surface(lx + step, lz) * tx * (1 - tz)
+            + surface(lx, lz + step) * (1 - tx) * tz + surface(lx + step, lz + step) * tx * tz)
+
+
+def ground(x, z):
+    """Height of the ground as the game draws it: each square metre is two triangles, split from its (x+1, z)
+    corner to its (x, z+1) corner. Also returns the three ground points each height hangs on."""
+    fx = np.clip(np.asarray(x, np.float64) - X0, 0, FW - 1.001)
+    fz = np.clip(np.asarray(z, np.float64) - Z0, 0, FH - 1.001)
+    ix, iz = fx.astype(int), fz.astype(int)
+    tx, tz = fx - ix, fz - iz
+    lo = tx + tz <= 1.0
+    h10, h01 = H1[iz, ix + 1], H1[iz + 1, ix]
+    hc = np.where(lo, H1[iz, ix], H1[iz + 1, ix + 1])
+    ax, az = np.where(lo, tx, 1 - tx), np.where(lo, tz, 1 - tz)
+    return hc + ax * (np.where(lo, h10, h01) - hc) + az * (np.where(lo, h01, h10) - hc), ix, iz, lo
+
+
+def with_heights(q):
+    """Rows of (x, z) pairs as rows of (x, y, z) triples."""
+    q = np.asarray(q, np.float64)
+    if not len(q):
+        return np.zeros((0, q.shape[1] * 3 // 2 if q.ndim == 2 else 0), np.float32)
+    q = q.reshape(len(q), -1, 2)
+    y = surface(q[:, :, 0], q[:, :, 1])
+    return np.stack([q[:, :, 0], y, q[:, :, 1]], 2).reshape(len(q), -1).astype(np.float32)
+
+
+# paved.bin (float32): per cell [cell x, cell z, number of asphalt triangles, sidewalk triangles, kerb pieces,
+# shoulder pieces], then the triangles (x, y, z three times each) and the pieces (x, y, z and the way out x, z,
+# for each end; the open side is to the right of the direction). y is the ground there; the game lifts asphalt
+# and sidewalk off it.
+paved = {}
+for name, geom in (("A", road_laid), ("S", side)):
+    for key, part in cells_of(geom):
+        tris = [triangles(g) for g in getattr(part, "geoms", [part]) if g.geom_type == "Polygon" and g.area > 0.05]
+        if tris:
+            paved.setdefault(key, {})[name] = np.concatenate(tris)
+for name, lines, solid in (("K", side.boundary, side), ("E", road_laid.boundary.difference(side.buffer(0.4)).difference(_deck_area.buffer(0.3)) if road_decks else road_laid.boundary.difference(side.buffer(0.4)), road_laid)):
+    for key, part in cells_of(lines):
+        seg = pieces(part, solid)
+        if len(seg):
+            paved.setdefault(key, {})[name] = seg
+# The ground under the paving is then made to agree with it: each ground point under a triangle is put on that
+# triangle, so the ground cannot stand up through the asphalt between a triangle's corners.
+_all_tris = np.concatenate([d[k] for d in paved.values() for k in "AS" if k in d and len(d[k])]).astype(np.float64).reshape(-1, 3, 2)
+_y = surface(_all_tris[:, :, 0], _all_tris[:, :, 1])
+_ax, _az = _all_tris[:, 0, 0], _all_tris[:, 0, 1]
+_e1, _e2 = _all_tris[:, 1] - _all_tris[:, 0], _all_tris[:, 2] - _all_tris[:, 0]
+_den = _e1[:, 0] * _e2[:, 1] - _e1[:, 1] * _e2[:, 0]
+_okt = np.abs(_den) > 1e-6
+_bx0 = np.floor(_all_tris[:, :, 0].min(1) - X0).astype(int)
+_bz0 = np.floor(_all_tris[:, :, 1].min(1) - Z0).astype(int)
+_span = int(max(np.ceil(_all_tris[:, :, 0].max(1) - X0).astype(int).__sub__(_bx0).max(), np.ceil(_all_tris[:, :, 1].max(1) - Z0).astype(int).__sub__(_bz0).max())) + 1
+_new = H1.copy()
+_under = np.zeros(H1.shape, bool)                      # ground points that lie under paving
+for _dx in range(_span):
+    for _dz in range(_span):
+        gx, gz = _bx0 + _dx, _bz0 + _dz
+        px, pz = gx + X0 - _ax, gz + Z0 - _az
+        u = (px * _e2[:, 1] - pz * _e2[:, 0]) / np.where(_okt, _den, 1.0)
+        v = (pz * _e1[:, 0] - px * _e1[:, 1]) / np.where(_okt, _den, 1.0)
+        hit = _okt & (u >= -1e-6) & (v >= -1e-6) & (u + v <= 1 + 1e-6) & (gx >= 0) & (gx < FW) & (gz >= 0) & (gz < FH)
+        if hit.any():
+            _new[gz[hit], gx[hit]] = (_y[hit, 0] + u[hit] * (_y[hit, 1] - _y[hit, 0]) + v[hit] * (_y[hit, 2] - _y[hit, 0])).astype(np.float32)
+            _under[gz[hit], gx[hit]] = True
+H1 = _new
+H1 = (np.clip(np.floor((H1 - H_OFFSET) / H_SCALE + 0.01), 0, 65535) * H_SCALE + H_OFFSET).astype(np.float32)
+# And the ground just beside the paving may not stand over it: a bank begins a metre out from the edge of the
+# asphalt, not on it (the ground between a point under the road and a higher one beside it would otherwise
+# rise across the edge and cover it in wedges).
+_top = ndimage.maximum_filter(np.where(_under, H1, -1e9).astype(np.float32), size=3)
+_ring = ndimage.binary_dilation(_under, structure=np.ones((3, 3), bool)) & ~_under & (H1 > 0.5)
+H1 = np.where(_ring, np.minimum(H1, _top + 0.06), H1).astype(np.float32)
+H1 = (np.clip(np.round((H1 - H_OFFSET) / H_SCALE), 0, 65535) * H_SCALE + H_OFFSET).astype(np.float32)
+print("  ground beside the paving held down at", int((_ring & (H1 <= _top + 0.07)).sum()), "points")
+# Last, what still stands through is pressed down. Between its points the ground is flat pieces of a square
+# metre, the paving flat pieces of its own, and where the paving folds inward the ground between can stand
+# over it. The ground is measured along every edge of every paved triangle (where the two can differ most)
+# and the ground points that hold it too high are lowered, until nothing is nearer the top of the asphalt
+# than 4 cm.
+_tq = np.linspace(0.0, 1.0, 13)
+for _round in range(8):
+    _worst, _n_low = 0.0, 0
+    _down = np.zeros(H1.shape, np.float32)
+    for _c0 in range(0, len(_all_tris), 150000):
+        _t = _all_tris[_c0:_c0 + 150000]
+        _yy = _y[_c0:_c0 + 150000]
+        for _a, _b in ((0, 1), (1, 2), (2, 0)):
+            _px = _t[:, _a, 0][:, None] * (1 - _tq) + _t[:, _b, 0][:, None] * _tq
+            _pz = _t[:, _a, 1][:, None] * (1 - _tq) + _t[:, _b, 1][:, None] * _tq
+            _py = _yy[:, _a][:, None] * (1 - _tq) + _yy[:, _b][:, None] * _tq
+            _g, _ix, _iz, _lo = ground(_px, _pz)
+            _ex = _g - (_py + 0.06)
+            _bad = _ex > 0.0
+            if not _bad.any():
+                continue
+            _worst = max(_worst, float(_ex.max()))
+            _n_low += int(_bad.sum())
+            _e, _ix, _iz, _lo = _ex[_bad].astype(np.float32) + 0.01, _ix[_bad], _iz[_bad], _lo[_bad]
+            np.maximum.at(_down, (_iz, _ix + 1), _e)
+            np.maximum.at(_down, (_iz + 1, _ix), _e)
+            np.maximum.at(_down, (np.where(_lo, _iz, _iz + 1), np.where(_lo, _ix, _ix + 1)), _e)
+    if _n_low == 0:
+        break
+    H1 = H1 - _down
+    H1 = (np.clip(np.floor((H1 - H_OFFSET) / H_SCALE + 0.01), 0, 65535) * H_SCALE + H_OFFSET).astype(np.float32)
+    print("  ground standing through the paving: %d places, by up to %.2f m; pressed down (round %d)" % (_n_low, _worst, _round + 1))
+del _all_tris, _new, _under, _top, _ring, _down
+with open(os.path.join(OUT, "paved.bin"), "wb") as f:
+    for (cx, cz), d in sorted(paved.items()):
+        parts = [with_heights(d.get(k, np.zeros((0, 6), np.float32))) if k in "AS" else pieces_laid(d.get(k, np.zeros((0, 8), np.float32))) for k in "ASKE"]
+        f.write(np.asarray([cx, cz] + [len(q) for q in parts], np.float32).tobytes())
+        for q in parts:
+            f.write(q.astype(np.float32).tobytes())
+print("  paved cells:", len(paved), "asphalt triangles:", sum(len(d.get("A", [])) for d in paved.values()),
+      "sidewalk triangles:", sum(len(d.get("S", [])) for d in paved.values()))
+
+# How good are the roads? Counted over the whole map and written to data/road_check.json with the worst places,
+# so that a change to the road building can be judged by numbers: holes in the asphalt under where cars drive,
+# sidewalk lying in the carriageway, asphalt on steep ground, and jolts along the middle of the road.
+_chk = {"hole": [], "walk": [], "steep": [], "jolt": []}
+_cover = road_laid.union(_deck_area) if road_decks else road_laid
+shapely.prepare(_cover); shapely.prepare(side); shapely.prepare(bld_union)
+_n_pts = 0
+for w in road_ways:
+    if w[0] != 0 or not w[6] or len(w[5]) < 2 or id(w[5]) in pedestrian_ids:
+        continue
+    st = np.asarray(stations(w[5], 2.0))
+    if len(st) < 3:
+        continue
+    T = np.gradient(st, axis=0)
+    T /= np.maximum(np.hypot(T[:, 0], T[:, 1]), 1e-6)[:, None]
+    N = np.stack([T[:, 1], -T[:, 0]], 1)
+    for off in (0.0, w[1] - 0.7, -(w[1] - 0.7)):
+        P = st + N * off
+        ok = (P[:, 0] > X0 + 12) & (P[:, 0] < X1 - 12) & (P[:, 1] > Z0 + 12) & (P[:, 1] < Z1 - 12)
+        ok &= heights(P[:, 0], P[:, 1]) > 0.6
+        ok &= ~shapely.contains_xy(bld_union, P[:, 0], P[:, 1])
+        _n_pts += int(ok.sum())
+        miss = ok & ~shapely.contains_xy(_cover, P[:, 0], P[:, 1])
+        _chk["walk"] += [[round(float(x), 1), round(float(z), 1)] for x, z in P[miss & shapely.contains_xy(side, P[:, 0], P[:, 1])]]
+        _chk["hole"] += [[round(float(x), 1), round(float(z), 1)] for x, z in P[miss & ~shapely.contains_xy(side, P[:, 0], P[:, 1])]]
+    y = laid(st[:, 0], st[:, 1])
+    d2 = np.abs(y[:-2] - 2 * y[1:-1] + y[2:])
+    for k in np.nonzero((d2 > 0.08) & (y[1:-1] > 0.6) & (st[1:-1, 0] > X0 + 12) & (st[1:-1, 0] < X1 - 12) & (st[1:-1, 1] > Z0 + 12) & (st[1:-1, 1] < Z1 - 12))[0]:
+        _chk["jolt"].append([round(float(st[k + 1, 0]), 1), round(float(st[k + 1, 1]), 1), round(float(d2[k]), 2), int(graded[min(max(int(st[k + 1, 1] - Z0), 0), FH - 1), min(max(int(st[k + 1, 0] - X0), 0), FW - 1)]), w[1]])
+_n_tri = 0
+for d in paved.values():
+    q = with_heights(d.get("A", np.zeros((0, 6), np.float32))).reshape(-1, 3, 3).astype(np.float64)
+    if not len(q):
+        continue
+    n = np.cross(q[:, 1] - q[:, 0], q[:, 2] - q[:, 0])
+    slope = np.hypot(n[:, 0], n[:, 2]) / np.maximum(np.abs(n[:, 1]), 1e-9)
+    _n_tri += len(q)
+    for k in np.nonzero((slope > 0.25) & (q[:, :, 1].min(1) > 0.6))[0]:
+        _chk["steep"].append([round(float(q[k, :, 0].mean()), 1), round(float(q[k, :, 2].mean()), 1), round(float(slope[k]), 2), int(graded[int(q[k, :, 2].mean() - Z0), int(q[k, :, 0].mean() - X0)])])
+print("  road check: of", _n_pts, "points on the carriageway,", len(_chk["hole"]), "have no asphalt and", len(_chk["walk"]), "have sidewalk;",
+      "of", _n_tri, "asphalt triangles,", len(_chk["steep"]), "are steep; jolts along the middle of roads:", len(_chk["jolt"]))
+json.dump(_chk, open(os.path.join(DATA, "road_check.json"), "w"), separators=(",", ":"))
+del _chk, _cover
+
 # The ground as the game loads it: the 1 m grid in strips of 1000 columns (16-bit, 2 cm steps), which
 # it reads piece by piece around the player, and every tenth point of it for the far view.
-H_SCALE, H_OFFSET, STRIP = 0.02, -40.0, 1000
 os.makedirs(os.path.join(OUT, "h1"), exist_ok=True)
 _q = np.clip(np.round((H1 - H_OFFSET) / H_SCALE), 0, 65535).astype("<u2")
 for k in range((FW + STRIP - 1) // STRIP):
@@ -1431,7 +2095,15 @@ forest_g &= land
 mask_b = Image.fromarray((canopy[:FH - 1, :FW - 1] * 255).astype(np.uint8)).resize((MW, MH), Image.BOX).filter(ImageFilter.GaussianBlur(2.5))
 del canopy, chm
 
-mask_r = road_im.resize((MW, MH), Image.BOX)
+# The road tint of the ground: full (255) where the ground itself is the road surface (gravel roads, runways),
+# half (128) where laid asphalt or paving lies on it. The game tints the half-strength kind only far away, where
+# the laid surfaces are not built; close by, the asphalt is what was laid, and the bank beside it stays green.
+_r = np.asarray(road_im).copy()
+_laid = ndimage.binary_dilation(pmask, iterations=2)[:_r.shape[0], :_r.shape[1]]
+_r[:_laid.shape[0], :_laid.shape[1]][_laid & (_r[:_laid.shape[0], :_laid.shape[1]] > 0)] = 128
+_r[:_laid.shape[0], :_laid.shape[1]][pmask[:_laid.shape[0], :_laid.shape[1]]] = 128
+mask_r = Image.fromarray(_r).resize((MW, MH), Image.BOX)
+del _r, _laid
 mask_g = path_im.resize((MW, MH), Image.BOX)
 mask_a = Image.fromarray(255 - np.asarray(lake_im.resize((MW, MH), Image.BOX)))
 Image.merge("RGBA", (mask_r, mask_g, mask_b, mask_a)).save(os.path.join(OUT, "mask.png"))
@@ -1738,6 +2410,12 @@ try:
     real_colours = json.load(open(os.path.join(DATA, "colours.json")))
 except OSError:
     real_colours = {}
+try:                                                      # and from Vegbilder's road photos, which stand closer (colours.py --vegbilder)
+    for _k, _v in json.load(open(os.path.join(DATA, "colours_vegbilder.json"))).items():
+        if int(_k) not in getattr(overrides, "NO_PHOTO_COLOUR", ()):
+            real_colours[_k] = dict(real_colours.get(_k, {}), **_v)
+except OSError:
+    pass
 photographed = set()
 n_real = [0, 0]
 

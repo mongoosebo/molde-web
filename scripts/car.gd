@@ -54,6 +54,7 @@ const TAIL_LINK := 0.085
 
 var _chassis: Node3D
 var _col: CollisionShape3D
+var _body_mesh: ArrayMesh
 var _wheels: Array = []          # [hub, spinning part, is_front, rest position]
 var _spin := 0.0
 var _rear_spin := 0.0
@@ -109,6 +110,7 @@ func _ready() -> void:
 	_build_details(shell)
 	var body_mi := MeshInstance3D.new()
 	body_mi.mesh = shell.commit(_mats)
+	_body_mesh = body_mi.mesh
 	_chassis.add_child(body_mi)
 
 	var wheel := Geo.new()
@@ -168,14 +170,13 @@ func _ready() -> void:
 	pm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	pm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	pm.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	# Without this the puff ignores each particle's own size, so the puffs not in the air at the moment (which
+	# have no size) are all drawn full size in one heap at the wheel: a black ball that greys as they are used.
+	pm.billboard_keep_scale = true
 	pm.vertex_color_use_as_albedo = true
 	pm.albedo_texture = _puff_texture()
 	pm.cull_mode = BaseMaterial3D.CULL_DISABLED
 	puff.material = pm
-	var grow := Curve.new()
-	grow.add_point(Vector2(0.0, 0.18))
-	grow.add_point(Vector2(0.25, 0.6))
-	grow.add_point(Vector2(1.0, 1.0))
 	var fade := Gradient.new()
 	fade.set_color(0, Color(0.92, 0.92, 0.92, 0.0))
 	fade.add_point(0.06, Color(0.90, 0.90, 0.90, 0.62))
@@ -198,9 +199,6 @@ func _ready() -> void:
 		p.gravity = Vector3(0, 0.9, 0)
 		p.damping_min = 0.6
 		p.damping_max = 1.2
-		p.scale_amount_min = 2.6
-		p.scale_amount_max = 4.6
-		p.scale_amount_curve = grow
 		p.color_ramp = fade
 		p.angle_min = 0.0
 		p.angle_max = 360.0
@@ -209,11 +207,8 @@ func _ready() -> void:
 		add_child(p)
 		_smoke.append(p)
 
-	var shape := BoxShape3D.new()
-	shape.size = BODY_BOX
 	_col = CollisionShape3D.new()
-	_col.shape = shape
-	_col.position = Vector3(0, 0.80, 0)
+	_col.shape = hull_shape()                              # parked, it is as solid as it looks
 	var body := StaticBody3D.new()
 	body.add_child(_col)
 	add_child(body)
@@ -262,6 +257,23 @@ func _box(parent: Node3D, size: Vector3, pos: Vector3, color: Color, rough := 0.
 
 func specs() -> Dictionary:
 	return SPECS
+
+
+## Where the tyres stand on the road, in the car's own frame.
+func wheel_points() -> Array:
+	return [Vector3(-TRACK, 0, AXLE_F), Vector3(TRACK, 0, AXLE_F), Vector3(-TRACK, 0, AXLE_R), Vector3(TRACK, 0, AXLE_R)]
+
+
+## The shape of the body, for bumping into: the hull of what is drawn. With `floor` set, nothing of it reaches
+## lower than that (the wheels carry a driven vehicle; its body must clear kerbs and bumps).
+func hull_shape(floor := -1.0) -> ConvexPolygonShape3D:
+	var shape: ConvexPolygonShape3D = _body_mesh.create_convex_shape(true, true)
+	if floor > 0.0:
+		var pts := shape.points
+		for i in pts.size():
+			pts[i].y = maxf(pts[i].y, floor)
+		shape.points = pts
+	return shape
 
 
 ## Solid when parked; no collider of its own while someone is driving it.

@@ -22,6 +22,9 @@ const HELI_AT := Vector2(14.0, 50.0)
 
 
 func _ready() -> void:
+	if not OS.get_cmdline_user_args().is_empty():      # a check, not a game: do not wait for the screen
+		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+		Engine.max_physics_steps_per_frame = 24
 	_setup_input()
 	hud = HudScript.new()
 	add_child(hud)
@@ -98,6 +101,9 @@ func _ready() -> void:
 		return
 	if "--drive" in OS.get_cmdline_user_args():
 		_drive_and_quit()
+		return
+	if "--sweep" in OS.get_cmdline_user_args():
+		_sweep_and_quit()
 		return
 	if "--shot" in OS.get_cmdline_user_args():
 		_screenshot_and_quit()
@@ -432,7 +438,7 @@ func _bike_test_and_quit() -> void:
 		if i == 14:
 			await get_tree().process_frame
 			get_viewport().get_texture().get_image().save_png("res://data/shot_bike3.png")
-	print("BIKE jumped ", snappedf(top, 0.01), " m, back on the ground: ", player.is_on_floor(), ", still going ", snappedf(player._drive_speed * 3.6, 0.1), " km/h")
+	print("BIKE jumped ", snappedf(top, 0.01), " m, back on the ground: ", player.wheels_down(), ", still going ", snappedf(player._drive_speed * 3.6, 0.1), " km/h")
 	Input.action_release("move_forward")
 	Input.action_press("move_back")
 	for i in 120:
@@ -573,21 +579,42 @@ func _perf_and_quit() -> void:
 func _drive_and_quit() -> void:
 	hud.start(world, player)
 	player.set_process_unhandled_input(false)
-	# the longest roads within 2.5 km of the centre, a mix of main roads and residential streets
+	# the longest roads within 2.5 km of the centre, a mix of main roads and residential streets; with
+	# --roads=N that many, from all over the map; with --car in the Volvo; --quick runs the clock three times as fast
+	var n_roads := 10
+	var reach := 2500.0
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--roads="):
+			n_roads = 1000000 if arg.substr(8) == "all" else int(arg.substr(8))       # all: every road of 25 m and more
+			reach = 1e9
+	if "--car" in OS.get_cmdline_user_args():
+		player.atv = player.vehicles[1]
+	if "--quick" in OS.get_cmdline_user_args():
+		Engine.physics_ticks_per_second = 180
+		Engine.time_scale = 3.0
+	if n_roads > 100000 or DisplayServer.get_name() == "headless":      # the whole map, or no window: as fast as the machine goes
+		Engine.physics_ticks_per_second = 960
+		Engine.time_scale = 16.0
+		Engine.max_physics_steps_per_frame = 240
+		world.detail.budget_usec = 400000
+		world.detail.sweep = true                        # (no house fronts: only what is driven on)
 	var picks := []
 	for w in world.detail.ways:
 		if w[1] != 0:
 			continue
 		var pts: PackedVector2Array = w[3]
-		if pts[0].length() > 2500.0 or pts.size() < 60:
+		if pts[0].length() > reach or pts.size() < (60 if reach < 1e8 else (40 if n_roads < 100000 else 9)):
 			continue
 		picks.append([pts.size(), w])
 	picks.sort_custom(func(a, b): return a[0] > b[0])
 	var chosen := []
 	for i in picks.size():
-		if i % maxi(1, picks.size() / 10) == 0 and chosen.size() < 10:
+		if i % maxi(1, picks.size() / n_roads) == 0 and chosen.size() < n_roads:
 			chosen.append(picks[i][1])
+	print("DRIVE roads chosen: ", chosen.size())
 	var total_stalls := 0
+	var total_flights := 0
+	var total_m := 0
 	for w in chosen:
 		var pts: PackedVector2Array = w[3]
 		var a: Node3D = player.atv
@@ -597,6 +624,7 @@ func _drive_and_quit() -> void:
 		var dir := (pts[3] - pts[1]).normalized()
 		a.global_position = Vector3(start.x, world.height_at(start.x, start.y) + 0.3, start.y)
 		a.global_rotation = Vector3(0, atan2(-dir.x, -dir.y), 0)
+		a.reset_physics_interpolation()
 		player.global_position = a.global_position + Vector3(0.3, 0.3, 0)
 		player.reset_physics_interpolation()
 		world.flush(player.global_position)
@@ -610,7 +638,9 @@ func _drive_and_quit() -> void:
 		var max_air := 0.0
 		var top := 0.0
 		var was_fast := false
-		while k < pts.size() - 2 and t < 60.0:
+		var flying := false
+		var flights := 0
+		while k < pts.size() - 2 and t < maxf(90.0, pts.size() * 3.0 / 7.0):
 			await get_tree().physics_frame
 			t += 1.0 / 60.0
 			var p: Vector3 = player.global_position
@@ -626,8 +656,8 @@ func _drive_and_quit() -> void:
 			elif diff < -0.04:
 				Input.action_press("move_right", clampf(-diff * 3.0, 0.0, 1.0))
 			# ease off for bends, as a rider would
-			if absf(diff) > 0.35 and player._drive_speed > 9.0:
-				Input.action_release("move_forward")
+			if (absf(diff) > 0.35 and player._drive_speed > 9.0) or (n_roads != 10 and player._drive_speed > 16.0):
+				Input.action_release("move_forward")                    # (the long test keeps to 60 km/h, as in town)
 			else:
 				Input.action_press("move_forward")
 			top = maxf(top, player._drive_speed)
@@ -641,13 +671,91 @@ func _drive_and_quit() -> void:
 					var col: KinematicCollision3D = player.get_slide_collision(ci)
 					if absf(col.get_normal().y) < 0.6:
 						what = "%s (%s), wall normal y %.2f" % [col.get_collider().get_parent().name, col.get_collider().get_parent().get_parent().name, col.get_normal().y]
-				print("DRIVE   stopped at (%d, %d) road point %d of %d, against: %s" % [p.x, p.z, k, pts.size(), what])
+				print("DRIVE   stopped at (%d, %d) road point %d of %d, against: %s; under the wheels: %s" % [p.x, p.z, k, pts.size(), what, player.blocked_by])
 			max_air = maxf(max_air, p.y - world.height_at(p.x, p.z))
+			if player._air_time > 0.2 and not flying:
+				flying = true
+				flights += 1
+				print("DRIVE   left the road at (%d, %d), %d km/h" % [p.x, p.z, int(player._drive_speed * 3.6)])
+			elif player._air_time == 0.0:
+				flying = false
 		Input.action_release("move_forward")
 		Input.action_release("move_left")
 		Input.action_release("move_right")
 		total_stalls += stalls
-		print("DRIVE %d m of road (width %.1f) in %.0f s: reached the end %s, top %d km/h, stopped %d times, highest off the ground %.1f m" % [
-			pts.size() * 3, w[0] * 2.0, t, "yes" if k >= pts.size() - 2 else "NO", int(top * 3.6), stalls, max_air])
-	print("DRIVE total stops: ", total_stalls)
+		total_flights += flights
+		total_m += k * 3
+		var ended := "yes" if k >= pts.size() - 2 else "NO, left at (%d, %d) heading for point %d at (%d, %d)" % [player.global_position.x, player.global_position.z, k, pts[k].x, pts[k].y]
+		print("DRIVE %d m of road (width %.1f) from (%d, %d) in %.0f s: reached the end %s, top %d km/h, stopped %d times, highest off the ground %.1f m" % [
+			pts.size() * 3, w[0] * 2.0, start.x, start.y, t, ended, int(top * 3.6), stalls, max_air])
+	print("DRIVE total: ", total_m, " m driven, stops: ", total_stalls, ", times in the air: ", total_flights)
+	get_tree().quit()
+
+
+## `./run.sh -- --sweep`: photograph every 200 m tile that has paving, straight down, with the asphalt,
+## the sidewalks, the paint and the bridge decks in flat signal colours on the real ground. The pictures go
+## to data/sweep/<tile x>_<tile z>.png (10 cm a pixel; tools/sweep.py reads them). --tiles=x:z,x:z picks tiles.
+func _sweep_and_quit() -> void:
+	hud.start(world, player)
+	player.set_process_unhandled_input(false)
+	var d = world.detail
+	d.sweep = true
+	for k in d._cells.keys():
+		d._drop(k)
+	for pair in [["asphalt", Color(1, 0, 1)], ["sidewalk", Color(0, 1, 1)], ["mark", Color(0, 0, 1)], ["trim", Color(1, 1, 0)],
+			["clad", Color(1, 1, 0)], ["plaster", Color(1, 1, 0)]]:
+		var m := StandardMaterial3D.new()
+		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		m.albedo_color = pair[1]
+		m.cull_mode = BaseMaterial3D.CULL_DISABLED
+		d.fac.mats[pair[0]] = m
+	var vp := SubViewport.new()
+	vp.size = Vector2i(2000, 2000)
+	vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	vp.msaa_3d = Viewport.MSAA_DISABLED
+	add_child(vp)
+	var cam := Camera3D.new()
+	cam.projection = Camera3D.PROJECTION_ORTHOGONAL
+	cam.size = 200.0
+	cam.near = 1.0
+	cam.far = 3000.0
+	cam.cull_mask = 2
+	cam.rotation = Vector3(-PI * 0.5, 0, 0)
+	var env := Environment.new()
+	env.background_mode = Environment.BG_COLOR
+	env.background_color = Color(0, 0, 0)
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color(1, 1, 1)
+	env.ambient_light_energy = 1.0
+	env.tonemap_mode = Environment.TONE_MAPPER_LINEAR
+	cam.environment = env
+	vp.add_child(cam)
+	cam.current = true
+	var tiles := {}
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--tiles="):
+			for t in arg.substr(8).split(","):
+				var f := t.split(":")
+				tiles[Vector2i(int(f[0]), int(f[1]))] = true
+	if tiles.is_empty():
+		for k in d.paved.keys():
+			tiles[Vector2i(int(floor(k.x / 2.0)), int(floor(k.y / 2.0)))] = true
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://data/sweep"))
+	var keys := tiles.keys()
+	keys.sort()
+	var n := 0
+	for t in keys:
+		var cx: float = t.x * 200.0 + 100.0
+		var cz: float = t.y * 200.0 + 100.0
+		player.global_position = Vector3(cx, world.height_at(cx, cz) + 0.3, cz)
+		player.reset_physics_interpolation()
+		world.flush(player.global_position)
+		cam.global_position = Vector3(cx, 1500.0, cz)
+		for i in 4:
+			await get_tree().process_frame
+		vp.get_texture().get_image().save_png("res://data/sweep/%d_%d.png" % [t.x, t.y])
+		n += 1
+		if n % 20 == 0:
+			print("SWEEP ", n, " / ", keys.size())
+	print("SWEEP done: ", n, " tiles")
 	get_tree().quit()

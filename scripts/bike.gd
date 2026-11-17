@@ -31,6 +31,7 @@ var _rear: Node3D
 var _crank: Node3D
 var _pedals: Array = []
 var _col: CollisionShape3D
+var _body_mesh: ArrayMesh
 var _mats := {}
 
 var _spin := 0.0
@@ -91,6 +92,7 @@ func _ready() -> void:
 		g.tube("alloy", [BB + Vector3(0.05, q[0], 0.0), rear_axle + Vector3(0.05, 0.045 if float(q[0]) > 0.0 else -0.05 + float(q[1]), 0.0)], 0.005, 5)
 	var body := MeshInstance3D.new()
 	body.mesh = g.commit(_mats)
+	_body_mesh = body.mesh
 	_chassis.add_child(body)
 
 	# cranks and pedals, turning about the bottom bracket
@@ -123,7 +125,13 @@ func _ready() -> void:
 	# the rear wheel
 	var wg = Shapes.Geo.new()
 	_build_wheel(wg)
-	var wheel_mesh: ArrayMesh = wg.commit(_mats)
+	var wheel_mats := {}                                # a tyre is a shell: both sides of it are drawn, so it is never seen through
+	for key in _mats:
+		wheel_mats[key] = _mats[key]
+		if _mats[key] is StandardMaterial3D:
+			wheel_mats[key] = _mats[key].duplicate()
+			wheel_mats[key].cull_mode = BaseMaterial3D.CULL_DISABLED
+	var wheel_mesh: ArrayMesh = wg.commit(wheel_mats)
 	_rear = Node3D.new()
 	_rear.position = rear_axle
 	_chassis.add_child(_rear)
@@ -203,6 +211,23 @@ func _mat(color: Color, rough: float, metallic := 0.0) -> StandardMaterial3D:
 # ------------------------------------------------------------------ what the player's code asks of a vehicle
 func specs() -> Dictionary:
 	return SPECS
+
+
+## Where the tyres stand on the ground, in the bicycle's own frame.
+func wheel_points() -> Array:
+	return [Vector3(0, 0, AXLE_F), Vector3(0, 0, AXLE_R)]
+
+
+## The shape of the body, for bumping into: the hull of what is drawn. With `floor` set, nothing of it reaches
+## lower than that (the wheels carry a driven vehicle; its body must clear kerbs and bumps).
+func hull_shape(floor := -1.0) -> ConvexPolygonShape3D:
+	var shape: ConvexPolygonShape3D = _body_mesh.create_convex_shape(true, true)
+	if floor > 0.0:
+		var pts := shape.points
+		for i in pts.size():
+			pts[i].y = maxf(pts[i].y, floor)
+		shape.points = pts
+	return shape
 
 
 func set_parked(parked: bool) -> void:

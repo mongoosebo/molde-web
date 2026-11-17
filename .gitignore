@@ -13,6 +13,10 @@ data/mapillary/
 
 # Notes left in the game with the right mouse button (scripts/devtool.gd)
 notes/
+data/vegbilder/
+data/sweep/
+data/paved_expect.pkl
+data/*.log
 
 # Web export (./web.sh)
 build/

@@ -21,7 +21,7 @@ from shapely.geometry import Polygon, box
 from shapely.ops import unary_union
 from scipy import ndimage
 
-VERSION = 7           # raise to throw away cached results
+VERSION = 9           # raise to throw away cached results
 STEP = 0.7            # spacing of the laser samples taken inside the outline
 TOL = 0.18            # how far a point may lie from a plane and still belong to it
 EAVE = 0.45           # how far the roof runs out past the wall
@@ -127,6 +127,153 @@ def _planes(Y, rng):
             mask |= near
             rem &= ~near
     return out, rem
+
+
+def _largest_rect(mask):
+    """The largest rectangle of set cells in a grid: (area, j0, j1, i0, i1), ends exclusive."""
+    nv, nu = mask.shape
+    height = np.zeros(nu, int)
+    best = (0, 0, 0, 0, 0)
+    for j in range(nv):
+        height = np.where(mask[j], height + 1, 0)
+        stack = []
+        for i in range(nu + 1):
+            h = height[i] if i < nu else 0
+            start = i
+            while stack and stack[-1][1] >= h:
+                st, hh = stack.pop()
+                if hh * (i - st) > best[0]:
+                    best = (hh * (i - st), j - hh + 1, j + 1, st, i)
+                start = st
+            stack.append((start, h))
+    return best
+
+
+def _wing_roof(Y, j0, j1, i0, i1, Yd=None):
+    """The roof of one rectangular wing, from the measured heights inside it. Returns (planes, mean error):
+    planes as [a, b, c] with y = a + b·i + c·j in grid cells; one plane for a flat or single-pitch roof, two
+    for a pitched one, four when its ends are hipped."""
+    sub = Y[j0:j1, i0:i1]
+    ok = ~np.isnan(sub)
+    if ok.sum() < 4:
+        return None
+    if Yd is not None:                                           # well inside the walls the laser is not blurred by the drop to the ground
+        deep = ~np.isnan(Yd[j0:j1, i0:i1])
+        if deep.sum() >= max(8, 0.4 * ok.sum()):
+            sub, ok = Yd[j0:j1, i0:i1], deep
+    jj, ii = np.mgrid[j0:j1, i0:i1]
+    y, ci, cj = sub[ok], ii[ok].astype(float), jj[ok].astype(float)
+    keep = y <= np.percentile(y, 97) + 0.3                      # a tree leaning over, an aerial
+    y, ci, cj = y[keep], ci[keep], cj[keep]
+    level = float(np.median(y))
+    best = ([np.array([level, 0.0, 0.0])], float(np.mean(np.abs(y - level))))
+    if len(y) >= 8:
+        A = np.stack([np.ones(len(y)), ci, cj], 1)                # one sloping plane
+        coef, *_ = np.linalg.lstsq(A, y, rcond=None)
+        slope = math.hypot(coef[1], coef[2]) / STEP
+        e = float(np.mean(np.abs(A @ coef - y)))
+        if 0.08 <= slope <= 0.9 and e < 0.7 * best[1] - 0.02:
+            best = ([coef], e)
+    mi, mj = (i0 + i1 - 1) / 2.0, (j0 + j1 - 1) / 2.0
+    hi_, hj_ = (i1 - i0) / 2.0, (j1 - j0) / 2.0
+    if len(y) >= 12 and min(hi_, hj_) * STEP >= 1.4:
+        for across, half, along, hlen, axis in ((cj - mj, hj_, ci - mi, hi_, 0), (ci - mi, hi_, cj - mj, hj_, 1)):
+            t = np.abs(across) / half
+            A = np.stack([np.ones(len(y)), -t], 1)
+            (top, rise), *_ = np.linalg.lstsq(A, y, rcond=None)
+            run = half * STEP
+            if rise < 0.5 or rise / run < 0.2:
+                continue
+            rise = min(rise, 1.3 * run, 7.0, max(0.5, top - (float(np.percentile(y, 6)) - 0.3)))   # the eaves are where they were measured
+            m = rise / half                                        # per cell
+            got = top - m * np.abs(across)
+            ends = []
+            if hlen >= half * 0.95:                                # do the ends come down too (a hipped roof, a pyramid)?
+                hip = np.minimum(got, top - m * (np.abs(along) - (hlen - half)))
+                if float(np.mean(np.abs(hip - y))) < 0.85 * float(np.mean(np.abs(got - y))):
+                    got, ends = hip, [1.0, -1.0]
+            e = float(np.mean(np.abs(got - y)))
+            if e < 0.8 * best[1] - 0.03:
+                planes = []
+                for sgn in (1.0, -1.0):                            # y = top - m·sgn·(x - mid) on each side
+                    if axis == 0:
+                        planes.append(np.array([top + m * sgn * mj, 0.0, -m * sgn]))
+                    else:
+                        planes.append(np.array([top + m * sgn * mi, -m * sgn, 0.0]))
+                for sgn in ends:                                   # y = top - m·(sgn·(s - mid) - (hlen - half))
+                    k = top + m * (hlen - half)
+                    if axis == 0:
+                        planes.append(np.array([k + m * sgn * mi, -m * sgn, 0.0]))
+                    else:
+                        planes.append(np.array([k + m * sgn * mj, 0.0, -m * sgn]))
+                best = (planes, e)
+    return best
+
+
+def _wings(Y, M, cover, Yd=None):
+    """A building as rectangular wings, each with a roof of its own: the outline (cells M) is cut into the
+    largest rectangles that fit it, a rectangle is cut again where the measured roof steps up or down along it
+    (a house and its lower garage drawn as one), and every wing gets a flat, single-pitch, pitched or hipped
+    roof from the heights measured inside it. Returns (list of plane lists, label grid over `cover`, boxes)."""
+    left = M.copy()
+    total = int(M.sum())
+    boxes = []
+    while len(boxes) < 6:
+        area, j0, j1, i0, i1 = _largest_rect(left)
+        if area < max(10, 0.06 * total) or min(j1 - j0, i1 - i0) < 3:
+            break
+        boxes.append((j0, j1, i0, i1))
+        left[j0:j1, i0:i1] = False
+    if not boxes:
+        return None
+    # a step in the roof along a rectangle: two wings
+    cut = []
+    for j0, j1, i0, i1 in boxes:
+        parts = [(j0, j1, i0, i1)]
+        for axis in (1, 0):
+            new = []
+            for b in parts:
+                a0, a1 = (b[2], b[3]) if axis == 1 else (b[0], b[1])
+                sub = Y[b[0]:b[1], b[2]:b[3]]
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    prof = np.nanmedian(sub, axis=0 if axis == 1 else 1)
+                at, jump = -1, 1.1
+                for s in range(4, len(prof) - 4):
+                    a, c = prof[:s], prof[s:]
+                    if np.isnan(a).all() or np.isnan(c).all():
+                        continue
+                    whole = abs(float(np.nanmedian(a)) - float(np.nanmedian(c)))
+                    here = abs(float(np.nanmedian(prof[max(0, s - 2):s])) - float(np.nanmedian(prof[s:s + 2])))
+                    if min(whole, here) > jump:
+                        at, jump = s, min(whole, here)
+                if at > 0:
+                    if axis == 1:
+                        new += [(b[0], b[1], b[2], b[2] + at), (b[0], b[1], b[2] + at, b[3])]
+                    else:
+                        new += [(b[0], b[0] + at, b[2], b[3]), (b[0] + at, b[1], b[2], b[3])]
+                else:
+                    new.append(b)
+            parts = new
+        cut += parts
+    boxes = cut
+    roofs_, keep = [], []
+    for b in boxes:
+        r = _wing_roof(Y, *b, Yd=Yd)
+        if r is not None:
+            roofs_.append(r[0])
+            keep.append(b)
+    if not keep:
+        return None
+    label = np.zeros(M.shape, int)
+    for g, (j0, j1, i0, i1) in enumerate(keep):
+        label[j0:j1, i0:i1] = g + 1
+    label[~cover] = 0
+    _d, (nj, ni) = ndimage.distance_transform_edt(label == 0, return_indices=True)
+    fill = cover & (label == 0)
+    label[fill] = label[nj[fill], ni[fill]]
+    return roofs_, label, keep
 
 
 def flat_roof(pts, y):
@@ -341,23 +488,91 @@ def fit(pts, dom, ground_lo, seed=0, force_plain=False):
         eave_y, ridge_y = float(np.percentile(ok_y, 10)), float(np.percentile(ok_y, 96))
         eave_y = min(eave_y, tallest)
         ridge_y = min(ridge_y, eave_y + 5.0)
-        if area > 450 or ridge_y - eave_y < 0.7 or (ridge_y - eave_y) / hw < 0.18:
-            return flat_roof(pts, min(float(np.percentile(ok_y, 60)), tallest))
-        slope = min(max((ridge_y - eave_y) / hw, 0.3), 1.1)
-        ridge_y = eave_y + slope * hw
-        first = (u0 if not along_u else v0) + 0.5 * STEP
-        planes, flat = [], []
-        for sgn in (-1.0, 1.0):                                    # y = k + m·X on each side of the ridge
-            m = -sgn * slope
-            k = ridge_y - m * mid
-            coef = np.array([k + m * first, 0.0, m * STEP]) if along_u else np.array([k + m * first, m * STEP, 0.0])
-            planes.append([coef, valid & ((X - mid) * sgn > 0)])
-            flat.append(False)
-        if not planes[0][1].any() or not planes[1][1].any():
-            return flat_roof(pts, min(float(np.percentile(ok_y, 60)), tallest))
-        bodies, regions, simple = [[0, 1]], [foot], True
-        rest = np.zeros(U.shape, bool)
-        base_y = eave_y - 1.0
+        plain_flat = area > 450 or ridge_y - eave_y < 0.7 or (ridge_y - eave_y) / hw < 0.18
+        level = min(float(np.percentile(ok_y, 60)), tallest)
+        if plain_flat:
+            plain_planes = [[np.array([level, 0.0, 0.0]), valid.copy()]]
+        else:
+            slope = min(max((ridge_y - eave_y) / hw, 0.3), 1.1)
+            ridge_y = eave_y + slope * hw
+            first = (u0 if not along_u else v0) + 0.5 * STEP
+            plain_planes = []
+            for sgn in (-1.0, 1.0):                                    # y = k + m·X on each side of the ridge
+                m = -sgn * slope
+                k = ridge_y - m * mid
+                coef = np.array([k + m * first, 0.0, m * STEP]) if along_u else np.array([k + m * first, m * STEP, 0.0])
+                plain_planes.append([coef, valid & ((X - mid) * sgn > 0)])
+            if not plain_planes[0][1].any() or not plain_planes[1][1].any():
+                plain_flat, plain_planes = True, [[np.array([level, 0.0, 0.0]), valid.copy()]]
+        meas = valid & ~np.isnan(Y)
+        plain_err = float(np.mean(np.abs(np.min([ev(p[0], ii[meas], jj[meas]) for p in plain_planes], 0) - Y[meas])))
+        # the same building as wings, each with its own roof: taken when it agrees clearly better with the laser
+        Yd = np.where(shapely.contains_xy(foot.buffer(-1.0), U.ravel(), V.ravel()).reshape(U.shape), Y, np.nan)
+        wing = None if force_plain else _wings(Y, shapely.contains_xy(foot, U.ravel(), V.ravel()).reshape(U.shape), cover, Yd)
+        if wing is not None:
+            w_roofs, w_label, w_boxes = wing
+            got = np.full(U.shape, np.nan)
+            for g, pl in enumerate(w_roofs):
+                mine = (w_label == g + 1) & meas
+                if mine.any():
+                    got[mine] = np.min([ev(c_, ii[mine], jj[mine]) for c_ in pl], 0)
+            w_ok = meas & ~np.isnan(got)
+            wing_err = float(np.mean(np.abs(got[w_ok] - Y[w_ok]))) if w_ok.sum() >= 6 else 9.0
+            if (len(w_roofs) == 1 and len(w_roofs[0]) == 1 and abs(w_roofs[0][0][1]) + abs(w_roofs[0][0][2]) < 1e-9) \
+                    or wing_err > 0.85 * plain_err - 0.03 or wing_err > 1.2:
+                wing = None                                            # one flat block, or no better than the plain roof
+        if wing is None:
+            if plain_flat:
+                return flat_roof(pts, level)
+            planes, flat = plain_planes, [False, False]
+            bodies, regions, simple = [[0, 1]], [foot], True
+            rest = np.zeros(U.shape, bool)
+            base_y = eave_y - 1.0
+        else:
+            planes, flat, bodies, regions = [], [], [], []
+            lows = []
+            for g, pl in enumerate(w_roofs):
+                body = []
+                mine = w_label == g + 1
+                for c_ in pl:
+                    c_ = np.array(c_, float)
+                    is_flat = abs(c_[1]) + abs(c_[2]) < 1e-9
+                    planes.append([c_, mine])
+                    flat.append(is_flat)
+                    body.append(len(planes) - 1)
+                bodies.append(body)
+                geom = _cells_polygon(mine, u0, v0).buffer(0.4, join_style="mitre").intersection(foot)
+                regions.append(geom)
+                if mine.any():
+                    lows.append(float(np.min([ev(planes[q][0], ii[mine], jj[mine]) for q in body], 0).min()))
+            # where a pitched wing runs into the side of another, its roof carries on into it as far as that
+            # one's ridge, so that the two meet in valleys instead of at an upright wall
+            for g, (j0, j1, i0, i1) in enumerate(w_boxes):
+                if len(w_roofs[g]) < 2:
+                    continue
+                ridge_u = abs(w_roofs[g][0][1]) < 1e-9             # its ridge runs along u when the planes fall along v (j)
+                for h, (J0, J1, I0, I1) in enumerate(w_boxes):
+                    if h == g or len(w_roofs[h]) < 2:
+                        continue
+                    other_u = abs(w_roofs[h][0][1]) < 1e-9
+                    if ridge_u == other_u:
+                        continue
+                    if ridge_u:                                    # g's strip is its rows; it meets h end on, to the left or right
+                        if not (j0 >= J0 - 1 and j1 <= J1 + 1 and (abs(i1 - I0) <= 1 or abs(i0 - I1) <= 1)):
+                            continue
+                        mid_i = (I0 + I1) / 2.0
+                        ia, ib = (I0, mid_i) if abs(i1 - I0) <= 1 else (mid_i, I1)
+                        ext = box(u0 + ia * STEP, v0 + j0 * STEP, u0 + ib * STEP, v0 + j1 * STEP)
+                    else:
+                        if not (i0 >= I0 - 1 and i1 <= I1 + 1 and (abs(j1 - J0) <= 1 or abs(j0 - J1) <= 1)):
+                            continue
+                        mid_j = (J0 + J1) / 2.0
+                        ja, jb = (J0, mid_j) if abs(j1 - J0) <= 1 else (mid_j, J1)
+                        ext = box(u0 + i0 * STEP, v0 + ja * STEP, u0 + i1 * STEP, v0 + jb * STEP)
+                    regions[g] = unary_union([regions[g], ext.intersection(foot)])
+            simple = True
+            rest = np.zeros(U.shape, bool)
+            base_y = max(min(lows) - 0.6, ground_lo + 2.2) if lows else eave_y - 1.0
 
     roof_kind = 0 if all(flat[q] for body in bodies for q in body) else (2 if any(len(b) >= 3 for b in bodies) else 1)
     # a plane carried on past the points it was fitted to must not climb above anything that was measured

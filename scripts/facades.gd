@@ -321,6 +321,11 @@ func build(mb: MB, rec: Dictionary) -> void:
 	# where the ground is lowest, and backs into the hill.
 	var eave: float = ymax + rec["h"]
 	var datum := ymax + 0.4
+	# On a steep plot the house does not stand on a concrete base three storeys tall: one basement storey shows
+	# at its lowest corner at the most, and above that the walls are the house's own, with its windows, all the
+	# way round. Uphill, the lowest of those storeys runs into the ground (no windows are cut below it).
+	if not garage and shop_fronts.is_empty():
+		datum = minf(datum, rec["ymin"] + BASEMENT + 0.4)
 	var door_face := longest
 	if garage:
 		var lowest := INF
@@ -524,6 +529,9 @@ func _facade(mb: MB, f: Face, base: float, yg: float, top: float, floors: int, g
 			var is_door := has_door and door_bays.has(b)
 			var s0 := mid - (dw if is_door else ow) * 0.5
 			var s1 := mid + (dw if is_door else ow) * 0.5
+			var soil := maxf(f.ground(s0), f.ground(s1))
+			if soil > (y + 0.6 if is_door else y0 - 0.1):
+				continue                                   # the hillside stands against the wall here: no opening
 			mb.quad(wall_m, f.p(prev, y), f.p(s0, y), f.p(s0, y1), f.p(prev, y1), f.n, wall)
 			if is_door:
 				var dt := y + dh

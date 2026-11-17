@@ -34,6 +34,16 @@ var _lean := Vector2.ZERO            # helicopter: how far it leans (to the righ
 var _drive_speed := 0.0
 var _atv_home: Node
 var _air_time := 0.0                # seconds since the wheels last touched the ground
+var _col: CollisionShape3D          # the walker's own shape
+var _car_col: CollisionShape3D      # the shape of the vehicle being driven: its body, clear of the ground
+var _wheel_pts: Array = []          # where the driven vehicle's tyres stand, in its own frame
+var _vy := 0.0                      # the vehicle's speed up or down
+var _ground_v := 0.0                # how fast the ground under the wheels is rising, evened out
+var _ground_y := 0.0                # the ground under the wheels, last time
+var _wheels_down := true
+var blocked_by := ""                # what last stood too high under a wheel to drive up (for the checks)
+var _wheel_hit := ""
+const BODY_CLEAR := 0.30            # nothing of a driven vehicle's hitbox reaches lower than this over the road
 
 var _pivot: Node3D
 var _arm: SpringArm3D
@@ -67,10 +77,10 @@ func _ready() -> void:
 	var capsule := CapsuleShape3D.new()
 	capsule.radius = 0.32
 	capsule.height = 1.75
-	var col := CollisionShape3D.new()
-	col.shape = capsule
-	col.position.y = 0.875
-	add_child(col)
+	_col = CollisionShape3D.new()
+	_col.shape = capsule
+	_col.position.y = 0.875
+	add_child(_col)
 
 	_build_body()
 
@@ -371,15 +381,40 @@ func _toggle_atv() -> void:
 		_show_rider(not _spec["hides_rider"])
 		if not _spec["hides_rider"]:
 			_ride_pose()
+		if not _spec.get("flies", false):
+			# From here on the vehicle is what is solid: its own body shape, held clear of the road, and it
+			# stands on its tyres (see _drive). The walker's capsule is put away until he gets out.
+			_wheel_pts = atv.wheel_points() if atv.has_method("wheel_points") else [Vector3(-0.5, 0, -0.8), Vector3(0.5, 0, -0.8), Vector3(-0.5, 0, 0.8), Vector3(0.5, 0, 0.8)]
+			_car_col = CollisionShape3D.new()
+			if atv.has_method("hull_shape") and _wheel_pts.size() >= 4:
+				_car_col.shape = atv.hull_shape(BODY_CLEAR)
+			else:
+				var box := BoxShape3D.new()
+				box.size = Vector3(0.5, 1.2, 1.7)
+				_car_col.shape = box
+				_car_col.position = Vector3(0, BODY_CLEAR + 0.6, 0)
+			_car_col.basis = Basis(Vector3.UP, _heading)
+			add_child(_car_col)
+			_col.disabled = true
+			motion_mode = CharacterBody3D.MOTION_MODE_FLOATING
+			_vy = 0.0
+			_ground_v = 0.0
+			_ground_y = global_position.y
+			_wheels_down = true
 	else:
 		if _spec.get("flies", false) and (not (is_on_floor() or global_position.y <= WATER_LINE + 0.35) or velocity.length() > 1.5):
 			return                                           # not while it is in the air
 		driving = false
 		floor_snap_length = 0.6
+		if _car_col != null:
+			_car_col.queue_free()
+			_car_col = null
+			_col.disabled = false
+			motion_mode = CharacterBody3D.MOTION_MODE_GROUNDED
 		var xf := _body.global_transform
 		atv.reparent(_atv_home, false)
-		atv.global_transform = Transform3D(Basis(Vector3.UP, _heading), xf.origin)
-		atv.global_position.y = world.height_at(xf.origin.x, xf.origin.z)
+		atv.global_transform = Transform3D(xf.basis.orthonormalized(), xf.origin)      # left leaning as the hill leans
+		# (it stays where its tyres stood: on the asphalt, on a bridge deck, not on the bare ground under them)
 		atv.reset_physics_interpolation()
 		atv.park()
 		atv.set_parked(true)
@@ -432,7 +467,7 @@ func _drive(delta: float, iv: Vector2) -> void:
 	# No glue: the ATV is carried by its own momentum. On the ground it runs along the surface;
 	# when the ground falls away faster than gravity can follow — a crest, a ledge, a ramp — it flies.
 	floor_snap_length = 0.0
-	var grounded := is_on_floor()
+	var grounded := _wheels_down
 	_air_time = 0.0 if grounded else _air_time + delta
 	var contact := _air_time < 0.12                  # brief hops over small bumps still count as driving
 	var in_water: bool = global_position.y <= WATER_LINE + 0.05
@@ -480,14 +515,7 @@ func _drive(delta: float, iv: Vector2) -> void:
 		fwd = Vector3(-sin(_course), 0.0, -cos(_course))
 		atv.set_drift(false, 0.0, 0.0)
 
-	if grounded:
-		var n := get_floor_normal()
-		var along := (fwd - n * fwd.dot(n)).normalized()
-		velocity = along * _drive_speed - n * 0.6      # along the slope, pressed lightly onto it
-	else:
-		velocity.x = fwd.x * _drive_speed
-		velocity.z = fwd.z * _drive_speed
-		velocity.y -= GRAVITY * delta
+	velocity = Vector3(fwd.x, 0.0, fwd.z) * _drive_speed * (cos(_body.basis.get_euler().x) if grounded else 1.0)
 	if _spec.get("bike", false):
 		# The bicycle jumps: holding Space winds the jump up (rider and bike crouch), letting go lets it fly —
 		# the longer it was held, the higher.
@@ -495,39 +523,120 @@ func _drive(delta: float, iv: Vector2) -> void:
 			_hop = minf(_hop + delta / 0.65, 1.0)
 		elif _hop > 0.0:
 			if contact:
-				velocity.y = 3.0 + 4.2 * _hop
+				_vy = 3.0 + 4.2 * _hop
+				_ground_v = _vy
 				_air_time = 1.0
 			_hop = 0.0
 		atv.set_preload(_hop)
 		atv.set_pedal(contact and Input.get_action_strength("move_forward") > 0.1 and _hop < 0.05)
+	var before := global_position
+	_car_col.basis = _body.basis.orthonormalized()     # the hitbox leans with the body: on a hill its nose is not in the road
 	move_and_slide()
-	if is_on_wall():
+	var struck := false
+	for ci in get_slide_collision_count():
+		if absf(get_slide_collision(ci).get_normal().y) < 0.7:      # something upright: a wall, a post, another car
+			struck = true
+	if struck:
 		# whatever it ran into takes the speed off
 		var real := get_real_velocity()
 		var kept := Vector3(real.x, 0.0, real.z).dot(fwd)
 		if absf(kept) < absf(_drive_speed):
 			_drive_speed = lerpf(_drive_speed, kept, 0.5)
+	global_position.y = before.y                       # up and down is the wheels' business, below
+
+	# The vehicle stands on its tyres: under each one the road is looked for, and the body rides at the height
+	# and the lean those points give. A kerb or a lip under one wheel moves the body only a little and never
+	# throws it; a ledge too high to drive up stops it like a wall.
+	var hb := Basis(Vector3.UP, _heading)
+	var grounds := _wheel_grounds(hb)
+	var gy := 0.0
+	for g in grounds:
+		gy += g
+	gy /= float(grounds.size())
+	if gy - global_position.y > 0.55 and global_position.y > WATER_LINE + 0.1:
+		blocked_by = "%s, %.2f m up" % [_wheel_hit, gy - global_position.y]
+		global_position.x = before.x
+		global_position.z = before.z
+		_drive_speed *= 0.4
+		grounds = _wheel_grounds(hb)
+		gy = 0.0
+		for g in grounds:
+			gy += g
+		gy /= float(grounds.size())
+	_ground_v = lerpf(_ground_v, clampf((gy - _ground_y) / maxf(delta, 0.001), -12.0, 12.0), minf(1.0, delta / 0.12))
+	_ground_y = gy
+	_vy -= GRAVITY * delta
+	var ny := global_position.y + _vy * delta
+	if ny <= gy + 0.01:
+		ny = lerpf(global_position.y, gy, minf(1.0, 28.0 * delta)) if gy > global_position.y else gy
+		_vy = _ground_v                                 # carried up or down with the road: over a crest it flies
+		_wheels_down = true
+	else:
+		_wheels_down = ny - gy < 0.06
+	global_position.y = ny
 	if global_position.y < WATER_LINE:
 		global_position.y = WATER_LINE
-		velocity.y = maxf(velocity.y, 0.0)
+		_vy = maxf(_vy, 0.0)
 	var ground: float = world.height_at(global_position.x, global_position.z)
 	if global_position.y < ground - 1.5:
 		global_position.y = ground + 0.3
-		velocity.y = 0.0
+		_vy = 0.0
 	global_position.x = clampf(global_position.x, world.x0 + 30.0, world.x1 - 30.0)
 	global_position.z = clampf(global_position.z, world.z0 + 30.0, world.z1 - 30.0)
 	world.update_streaming(global_position)
 	var want: Basis
-	if contact:
-		want = world.ground_basis(global_position.x, global_position.z, _heading)
+	if _air_time < 0.12:
+		# nose and tail, left and right: the body leans as its wheels stand
+		var yf := 0.0; var yr := 0.0; var yl := 0.0; var yrt := 0.0
+		var nf := 0; var nr := 0; var nl := 0; var nrt := 0
+		var zf := 0.0; var zr := 0.0; var xl := 0.0; var xr := 0.0
+		for i in _wheel_pts.size():
+			var p: Vector3 = _wheel_pts[i]
+			if p.z < 0.0:
+				yf += grounds[i]; zf += p.z; nf += 1
+			else:
+				yr += grounds[i]; zr += p.z; nr += 1
+			if p.x < -0.05:
+				yl += grounds[i]; xl += p.x; nl += 1
+			elif p.x > 0.05:
+				yrt += grounds[i]; xr += p.x; nrt += 1
+		var f3 := hb * Vector3(0, 0, -1)
+		var r3 := hb * Vector3(1, 0, 0)
+		if nf > 0 and nr > 0:
+			f3 = (f3 * (zr / nr - zf / nf) + Vector3(0, yf / nf - yr / nr, 0)).normalized()
+		if nl > 0 and nrt > 0:
+			r3 = (r3 * (xr / nrt - xl / nl) + Vector3(0, yrt / nrt - yl / nl, 0)).normalized()
+		var up3 := r3.cross(f3).normalized()
+		want = Basis(f3.cross(up3).normalized(), up3, -f3).orthonormalized()
 	else:
 		# in the air the nose follows the arc
 		var hs := maxf(absf(_drive_speed), 3.0)
-		want = Basis(Vector3.UP, _heading) * Basis(Vector3.RIGHT, clampf(atan2(velocity.y, hs) * 0.7, -0.6, 0.6))
+		want = Basis(Vector3.UP, _heading) * Basis(Vector3.RIGHT, clampf(atan2(_vy, hs) * 0.7, -0.6, 0.6))
 	_body.basis = _body.basis.orthonormalized().slerp(want.orthonormalized(), minf(1.0, 10.0 * delta))
 	atv.animate(_drive_speed * cos(angle_difference(_course, _heading)), -iv.x, delta, [get_rid()])
 	if not _spec["hides_rider"]:
 		_ride_pose()
+
+
+## The road under each tyre of the driven vehicle: what a ray straight down from above the wheel meets (asphalt,
+## a kerb, a bridge deck), or the bare ground where it meets nothing.
+func _wheel_grounds(hb: Basis) -> Array:
+	var space := get_world_3d().direct_space_state
+	var out := []
+	for p in _wheel_pts:
+		var wp: Vector3 = global_position + hb * p
+		var q := PhysicsRayQueryParameters3D.create(wp + Vector3(0, 0.9, 0), wp - Vector3(0, 2.0, 0))
+		q.exclude = [get_rid()]
+		var hit := space.intersect_ray(q)
+		out.append(hit["position"].y if not hit.is_empty() else world.height_at(wp.x, wp.z))
+		if not hit.is_empty() and hit["position"].y > global_position.y + 0.4:
+			var par: Node = hit["collider"].get_parent()
+			_wheel_hit = "%s/%s" % [par.get_parent().name if par.get_parent() != null else "", par.name]
+	return out
+
+
+func wheels_down() -> bool:
+	return _wheels_down
 
 
 ## Flying the helicopter. It has weight: with the rotor up to speed the lift just carries it, Space adds
