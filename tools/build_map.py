@@ -1578,12 +1578,38 @@ for _pts, _as_road in ((overrides.ASPHALT_POCKETS, True), (overrides.PAVING_POCK
 _patches = [(k_, shapely.Point(x_, z_).buffer(r_)) for k_, x_, z_, r_ in overrides.PATCHES]
 _patches += [("paving", g) for g in _sunk_strips if not g.is_empty]
 _ppath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "patches.jsonl")
+# The squares from the tool are markers, not the shape itself (said 18 Nov): they show where the surface is to be.
+# So a run of squares of one kind is taken together: the gaps between them and the pockets between them and the
+# surface of that kind already beside them are filled, the stair of square corners is rounded off, and the
+# ground under marked asphalt is evened out more than other paved ground (see where the surfaces are laid).
+_marked = []
 if os.path.exists(_ppath):
+    _runs = []
     for _ln in open(_ppath):
         if _ln.strip():
             _q = json.loads(_ln)
             _h = _q["size"] / 2.0
-            _patches.append((_q["kind"], shapely.affinity.rotate(shapely.box(_q["x"] - _h, _q["z"] - _h, _q["x"] + _h, _q["z"] + _h), -_q.get("yaw", 0.0), use_radians=True)))
+            _sq = shapely.affinity.rotate(shapely.box(_q["x"] - _h, _q["z"] - _h, _q["x"] + _h, _q["z"] + _h), -_q.get("yaw", 0.0), use_radians=True)
+            if _runs and _runs[-1][0] == _q["kind"]:
+                _runs[-1][1].append(_sq)
+            else:
+                _runs.append((_q["kind"], [_sq]))
+    for _kind, _sqs in _runs:
+        _u = unary_union(_sqs)
+        if _kind not in ("asphalt", "paving"):
+            _patches.append((_kind, _u))
+            continue
+        _near = _u.buffer(5.0)
+        _have = (road_all if _kind == "asphalt" else side).intersection(_near)
+        _full = unary_union([_u, _have]).buffer(3.0, quad_segs=4).buffer(-3.0, quad_segs=4)
+        _full = unary_union([shapely.Polygon(g.exterior, [h for h in g.interiors if shapely.Polygon(h).area > 150.0])
+                             for g in getattr(_full, "geoms", [_full]) if g.geom_type == "Polygon"])
+        _full = _full.buffer(-1.2, quad_segs=4).buffer(1.2, quad_segs=4).intersection(_near)
+        _full = unary_union([_full, _u.buffer(-0.6).buffer(0.3)])           # (a single small square is not rounded away)
+        _patches.append((_kind, _full))
+        if _kind == "asphalt":
+            _marked.append(_full)
+    print("  marked with the tool: %d runs of squares, %d m2 of asphalt" % (len(_runs), sum(g.area for g in _marked)))
 for _kind, _shape in _patches:
     if _kind == "island":
         # (the piece of paving the point lies on, as far as 16 m from it)
@@ -2054,6 +2080,25 @@ if _loose.any():
     _t = np.clip(_wg / 0.25, 0.0, 1.0)
     H1 = np.where(_loose, _hg * _t + _hs * (1 - _t), H1).astype(np.float32)
     del _src, _wg, _hg, _self, _ws, _hs, _t
+    if _marked:
+        # asphalt marked with the tool is to be smooth: its ground is evened out over a wider reach, fading in at the edge
+        _mm = Image.new("L", (FW, FH), 0)
+        _md = ImageDraw.Draw(_mm)
+        for _g0 in _marked:
+            for g in getattr(_g0, "geoms", [_g0]):
+                if g.geom_type == "Polygon":
+                    _md.polygon([(x - X0, z - Z0) for x, z in g.exterior.coords], fill=255)
+        _mk = (np.asarray(_mm) > 0) & _loose
+        del _mm, _md
+        if _mk.any():
+            _self = (pmask & (H1 > 0.5)).astype(np.float32)
+            _ws = ndimage.gaussian_filter(_self, 5.0)
+            _hs = ndimage.gaussian_filter(_self * H1, 5.0) / np.maximum(_ws, 1e-6)
+            _w = np.clip(ndimage.gaussian_filter(_mk.astype(np.float32), 2.0) * 2.5 - 1.25, 0.0, 1.0) * _mk
+            H1 = (H1 * (1 - _w) + _hs * _w).astype(np.float32)
+            print("  marked asphalt made smooth:", int(_mk.sum()), "m2")
+            del _self, _ws, _hs, _w
+        del _mk
 print("  paved ground evened out:", int(_loose.sum()), "m2")
 del _loose
 # Paving does not lie in the sea. Where a quay, a pier or a shore road reaches out over ground at sea level,
