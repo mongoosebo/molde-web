@@ -625,6 +625,21 @@ def profile(st, half=0.0):
 # the bed; the game draws that surface as moving water (water.bin, written further down).
 print("rivers…")
 rivers = []           # [half width, 1 for a river, [(x, z, water level), ...]] running downstream
+# The bed is not cut into a road that is not a bridge: the ground of the road up to each end of a bridge stays as
+# it is (a bridge takes its height from there; with the banks cut away both bridges on Moldeelva in town lay
+# one to three metres too low, note of 17 Nov), and where a river goes under a road without a bridge it is a culvert.
+_dry = unary_union([LineString(w[5]).buffer(w[1] + 3.5, quad_segs=2) for w in road_ways if w[0] == 0 and w[6] and len(w[5]) >= 2])
+# (wide enough to take in the sidewalks beside the road; but not under a bridge itself, from a little inside each
+# of its ends (2.2 m, so that the asphalt's end under the deck still lies on ground): there the river must have its way through, or the ground stands as a wall under the deck)
+_spans = [shapely.ops.substring(LineString(b[2]), 2.2, LineString(b[2]).length - 2.2).buffer(b[0] + 4.0, cap_style="flat")
+          for b in bridges if len(b[2]) >= 2 and LineString(b[2]).length > 6.0]
+# (and not where another road comes up to the bridge beside it: its asphalt lay over the cut, a gap in the road
+# before and after the bridge. Note of 18 Nov.)
+_beside = unary_union([LineString(w[5]).buffer(w[1] + 2.0, cap_style="flat") for w in road_ways if w[0] == 0 and w[6] and len(w[5]) >= 2])
+_spans = [g for g in (sp.difference(_beside) for sp in _spans) if not g.is_empty]
+if _spans:
+    _dry = _dry.difference(unary_union(_spans))
+shapely.prepare(_dry)
 for kind, pts in waterways:
     st = [q for q in stations(pts, 2.0) if inside(q[0], q[1], 12)]
     if len(st) < 4:
@@ -632,11 +647,12 @@ for kind, pts in waterways:
     h = np.array([height_at(x, z) for x, z in st])
     if h[0] < h[-1]:                                       # drawn against the flow
         st, h = st[::-1], h[::-1]
-    half, depth = (3.4, 0.9) if kind == "river" else (1.4, 0.55) if kind == "stream" else (0.8, 0.4)
+    # (a river is deep enough to swim in; a stream or a ditch is waded through)
+    half, depth, fill = (3.4, 1.9, 1.55) if kind == "river" else (1.4, 0.55, 0.32) if kind == "stream" else (0.8, 0.4, 0.32)
     bed = np.minimum.accumulate(h) - depth
     pad = np.concatenate([np.full(3, bed[0]), bed, np.full(3, bed[-1])])
     bed = np.minimum.accumulate(np.convolve(pad, np.ones(7) / 7, mode="valid"))
-    fade = 1.8
+    fade = 4.0 if kind == "river" else 1.8          # (a deep bed gets wide, gentle banks, not walls)
     reach = half + fade
     for (xa, za), (xb, zb), ba, bb, ha in zip(st, st[1:], bed, bed[1:], h):
         if ha < 0.9:
@@ -650,8 +666,15 @@ for kind, pts in waterways:
         wt = np.clip((reach - np.hypot(gx - t * dx, gz - t * dz)) / fade, 0.0, 1.0)
         wt = wt * wt * (3 - 2 * wt)
         win = H1[j0:j1, i0:i1]
+        # Only the channel is cut: ground that already lies low, near the level of the water's own line. A bank,
+        # a channel wall or a road end that stands well above it is left alone (cut down, the roads at both
+        # ends of a bridge sank into the river).
+        wt = wt * np.clip((ha + 1.5 - win) / 0.7, 0.0, 1.0)
+        if _dry.intersects(shapely.box(X0 + i0, Z0 + j0, X0 + i1, Z0 + j1)):
+            _gx, _gz = np.meshgrid(X0 + np.arange(i0, i1, dtype=float), Z0 + np.arange(j0, j1, dtype=float))
+            wt = np.where(shapely.contains_xy(_dry, _gx, _gz), 0.0, wt)
         H1[j0:j1, i0:i1] = np.minimum(win, win * (1 - wt) + (ba + (bb - ba) * t) * wt)
-    rivers.append([half, 1.0 if kind == "river" else 0.0, [(x, z, max(float(b) + 0.32, 0.02)) for (x, z), b in zip(st, bed)]])
+    rivers.append([half, 1.0 if kind == "river" else 0.0, [(x, z, max(float(b) + fill, 0.02)) for (x, z), b in zip(st, bed)]])
 
 # Sidewalks by one rule. The map gives them in two ways: as a mark on the road ("sidewalk on the left") and as
 # lines of their own. Where a drawn line runs along a road for most of that road's length, it IS that road's
@@ -702,6 +725,16 @@ for (ri, side_i), (spans, lines_) in _cover.items():
 road_ways = [w for wi, w in enumerate(road_ways) if wi not in _drop]
 print("  drawn sidewalks taken as their road's own:", len(_drop), "roads marked:", n_sw_marked)
 del _sw_roads, _sw_lines, _sw_tree, _cover, _drop
+# What the ground under each bridge is now, with the river's bed cut through it: grading the roads up to both
+# ends of a bridge raises the ground between them to the level of the road again (a wall of ground under the
+# bridge, where the river should run through). It is put back after the grading: see "under the bridges" below.
+_under = []
+for _sp in _spans:
+    _bx0, _bz0, _bx1, _bz1 = _sp.bounds
+    _i0, _i1 = max(int(_bx0 - X0) - 1, 0), min(int(_bx1 - X0) + 3, FW)
+    _j0, _j1 = max(int(_bz0 - Z0) - 1, 0), min(int(_bz1 - Z0) + 3, FH)
+    _gx, _gz = np.meshgrid(X0 + np.arange(_i0, _i1, dtype=float), Z0 + np.arange(_j0, _j1, dtype=float))
+    _under.append((_j0, _j1, _i0, _i1, shapely.contains_xy(_sp, _gx, _gz), H1[_j0:_j1, _i0:_i1].copy()))
 print("grading roads…")
 # Every road, sidewalk and paved path is pressed into the 1 m ground: level across its width (and its
 # sidewalks), following its own evened-out profile along, and blended back into the hillside beside it.
@@ -739,6 +772,31 @@ _carr = unary_union(_carr).buffer(-0.15)
 shapely.prepare(_carr)
 for ring in overrides.PAVED:
     road_areas.append([True, list(ring) + [ring[0]]])
+
+
+def _sunk_lot(sx, sz):
+    """A car park lying under its road (overrides.SUNK_LOTS): [the lot clear of the road, the road's ground, where the wall stands]."""
+    pt = shapely.Point(sx, sz)
+    cands = [q for q in (SPoly(p) for p in parkings if len(p) >= 3) if q.is_valid and q.distance(pt) < 15.0]
+    if not cands:
+        return None
+    lot = min(cands, key=lambda q: q.distance(pt))
+    near = [(LineString(w[5]), w[1]) for w in road_ways if w[0] == 0 and len(w[5]) >= 2 and LineString(w[5]).distance(lot) < 20.0]
+    rb = unary_union([l.buffer(hw + 1.2) for l, hw in near if l.intersection(lot.buffer(2.0)).length < 0.5 * l.length] or [SPoly()])
+    inn = lot.difference(rb)
+    if inn.is_empty:
+        return None
+    return inn, rb, inn.buffer(-0.6).boundary.intersection(rb.buffer(3.6))
+
+
+_sunk_strips = []
+for _sx, _sz in overrides.SUNK_LOTS:                       # and a sidewalk between the road and the wall (note of 18 Nov)
+    _sl = _sunk_lot(_sx, _sz)
+    if _sl is not None:
+        # (laid as a patch of paving further down, over the asphalt: here it would give way to the road's own)
+        _near = [LineString(w[5]).buffer(w[1] + 0.05) for w in road_ways if w[0] == 0 and len(w[5]) >= 2 and LineString(w[5]).distance(_sl[2]) < 8.0
+                 and LineString(w[5]).intersection(_sl[0].buffer(2.0)).length < 0.5 * LineString(w[5]).length]
+        _sunk_strips.append(_sl[2].buffer(3.2, cap_style="flat").difference(_sl[0].buffer(-0.45)).difference(unary_union(_near) if _near else SPoly()))
 for q in overrides.PORTALS:
     portals.append({"x": q["at"][0], "z": q["at"][1], "dx": q["dir"][0], "dz": q["dir"][1], "w": q["w"], "h": q["h"],
                     "rubble": False, "name": q["name"], "keep": True})
@@ -1105,6 +1163,12 @@ for k, c in enumerate(_chains):
     else:
         if line.distance(_town_roads) < 30.0:
             c[1] = 9
+for _bx, _bz, _bh in overrides.BRIDGE_HALF:               # a deck someone who knows the place says is too wide
+    for r in _road_decks:
+        if LineString(r[2]).distance(shapely.Point(_bx, _bz)) < 6.0:
+            r[0] = min(r[0], _bh)
+            if len(r) >= 5:
+                r[3], r[4] = max(r[3], -_bh), min(r[4], _bh)
 # A road deck reaches a few metres past the map's bridge at each end, so that it covers the whole cut the
 # stream makes through the road; and a short bridge in town has concrete parapets (16 added to its markings).
 for c in _chains:
@@ -1240,6 +1304,7 @@ def _deck_height(st, hs, x, z):
 
 road_decks = []       # [stations, their heights, the deck's outline and a bit, half width] of every road bridge
 _deck_ends = {}
+_deck_prof = {}
 for ch in _chains:
     if ch is None:
         continue
@@ -1247,9 +1312,22 @@ for ch in _chains:
     if len(st) < 2 or not all(inside(x, z, 5) for x, z in st):
         continue
     ha, hb = max(height_at(*st[0]), 0.6), max(height_at(*st[-1]), 0.6)
+    if any(LineString(st).distance(shapely.Point(q)) < 6.0 for q in overrides.LEVEL_BRIDGES):
+        # a bridge that is level, at the height of its higher end; from the lower end a ramp goes up to it
+        # (12 in 100), so that the walkway on the ground meets the deck (it hung 3 m in the air: note of 18 Nov)
+        _top = max(ha, hb)
+        _dist = [0.0]
+        for _qa, _qb in zip(st, st[1:]):
+            _dist.append(_dist[-1] + math.dist(_qa, _qb))
+        _deck_prof[id(ch)] = [min(_top, ha + 0.12 * d, hb + 0.12 * (_dist[-1] - d)) for d in _dist]
     _deck_ends[id(ch)] = (ha, hb)
     if ch[0] > 2.0:
-        road_decks.append([st, [ha + (hb - ha) * i / (len(st) - 1) for i in range(len(st))], None, ch[0]])
+        road_decks.append([st, _deck_prof.get(id(ch)) or [ha + (hb - ha) * i / (len(st) - 1) for i in range(len(st))], None, ch[0]])
+# under the bridges: the ground as the river left it (never higher than that). Done here, after every deck has taken
+# the height of its ends from the graded roads: an end can lie in the channel of a footbridge beside it
+for _j0, _j1, _i0, _i1, _m, _was in _under:
+    H1[_j0:_j1, _i0:_i1] = np.where(_m, np.minimum(H1[_j0:_j1, _i0:_i1], _was), H1[_j0:_j1, _i0:_i1])
+del _under
 for dk in road_decks:
     st, hs, _none, half = dk
     line = LineString(st)
@@ -1259,7 +1337,7 @@ for dk in road_decks:
     i0, i1, j0, j1 = int(x0 - X0), int(x1 - X0) + 2, int(z0 - Z0), int(z1 - Z0) + 2
     gx, gz = np.meshgrid(X0 + np.arange(i0, i1, dtype=float), Z0 + np.arange(j0, j1, dtype=float))
     top = _deck_height(st, hs, gx, gz)
-    limit = np.where(shapely.contains_xy(dk[2], gx, gz), top - 0.05, 1e9)
+    limit = np.where(shapely.contains_xy(dk[2], gx, gz), top - 0.10, 1e9)      # (0.10: clear of the asphalt that runs in under each end of the deck)
     if inner is not None and not inner.is_empty:
         limit = np.where(shapely.contains_xy(inner, gx, gz), top - 0.6, limit)
     was = H1[j0:j1, i0:i1].copy()
@@ -1294,7 +1372,7 @@ for ch in _chains:
             pt = shapely.Point(x + ox * sgn * (ch[0] + 0.9), z + oz * sgn * (ch[0] + 0.9))
             if any(_decks[j][0] is not ch for j in _deck_tree.query(pt, predicate="within")):
                 open_ |= bit
-        road_out.extend([x, z, float(open_), 0.0, ha + (hb - ha) * i / (len(st) - 1)])
+        road_out.extend([x, z, float(open_), 0.0, _deck_prof[id(ch)][i] if id(ch) in _deck_prof else ha + (hb - ha) * i / (len(st) - 1)])
     n_bridges += 1
 np.asarray(road_out, np.float32).tofile(os.path.join(OUT, "roads.bin"))
 print("  road ribbons:", n_ways, "stations:", n_stations, "bridges:", n_bridges)
@@ -1380,10 +1458,13 @@ shapely.prepare(_core_sw)
 _kept, n_bgone, n_btrim = [], 0, 0
 for _t, _pts, _id in buildings_raw:
     poly = SPoly(_pts)
-    if len(_pts) >= 3 and poly.is_valid and poly.area < 60 and shapely.intersects(_core_sw, poly) and poly.intersection(_core_sw).area > 0.15:
+    if len(_pts) >= 3 and poly.is_valid and (poly.area < 60 or _id in overrides.TRIM_BUILDINGS) and shapely.intersects(_core_sw, poly) and poly.intersection(_core_sw).area > 0.15:
         rest = poly.difference(_core_sw_wide).buffer(-0.4).buffer(0.4, join_style="mitre")
         rest = max(getattr(rest, "geoms", [rest]), key=lambda g: g.area) if not rest.is_empty else rest
-        if rest.is_empty or rest.geom_type != "Polygon" or rest.area < 0.55 * poly.area or rest.area < 8 or rest.buffer(-1.1).is_empty:
+        if _id in overrides.TRIM_BUILDINGS and not rest.is_empty and rest.geom_type == "Polygon":
+            _kept.append((_t, [(float(x), float(z)) for x, z in rest.simplify(0.2).exterior.coords[:-1]], _id))
+            n_btrim += 1
+        elif rest.is_empty or rest.geom_type != "Polygon" or rest.area < 0.55 * poly.area or rest.area < 8 or rest.buffer(-1.1).is_empty:
             n_bgone += 1                                   # (a strip under 2.2 m wide is no building)
         else:
             _kept.append((_t, [(float(x), float(z)) for x, z in rest.simplify(0.2).exterior.coords[:-1]], _id))
@@ -1471,15 +1552,70 @@ for x, z, r in overrides.KERB_OPENINGS:
 if _fills:
     road_all = unary_union([road_all] + _fills).buffer(0.6).buffer(-0.6).difference(bld_union.buffer(0.05)).intersection(map_box)
     side = side.difference(road_all.buffer(-0.05))
+# Unpaved ground closed in by paving that is paved too, says someone who knows the place: the pocket of open
+# ground round each point (as far as the paving, the buildings, or the given distance) becomes asphalt or slabs.
+for _pts, _as_road in ((overrides.ASPHALT_POCKETS, True), (overrides.PAVING_POCKETS, False)):
+    _got = []
+    for x, z, r in _pts:
+        # (a small patch of the other kind of paving lying in the pocket goes with it)
+        _other = side if _as_road else road_all
+        _big = unary_union([g for g in getattr(_other, "geoms", [_other]) if g.geom_type == "Polygon" and g.area > 80.0])
+        reach = shapely.Point(x, z).buffer(r).difference(bld_union.buffer(0.05)).difference(_big).difference(road_all if _as_road else side)
+        part = [g for g in getattr(reach, "geoms", [reach]) if g.geom_type == "Polygon" and g.distance(shapely.Point(x, z)) < 1.5]
+        if part:
+            _got.append(part[0].buffer(0.3))
+        else:
+            print("  no open ground to pave at", x, z)
+    if _got and _as_road:
+        road_all = unary_union([road_all] + _got).difference(bld_union.buffer(0.05)).intersection(map_box)
+        side = side.difference(road_all.buffer(-0.05))
+    elif _got:
+        side = unary_union([side] + _got).difference(bld_union.buffer(0.05)).intersection(map_box)
+        road_all = road_all.difference(unary_union(_got).buffer(-0.35))
+# Patches set by hand (overrides.PATCHES: circles) and with the tool in the game (tools/patches.jsonl: squares):
+# "asphalt" and "paving" lay that surface there, "none" takes both away; "island" turns the small piece of
+# paving at a point into asphalt. They are applied in the order they were made.
+_patches = [(k_, shapely.Point(x_, z_).buffer(r_)) for k_, x_, z_, r_ in overrides.PATCHES]
+_patches += [("paving", g) for g in _sunk_strips if not g.is_empty]
+_ppath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "patches.jsonl")
+if os.path.exists(_ppath):
+    for _ln in open(_ppath):
+        if _ln.strip():
+            _q = json.loads(_ln)
+            _h = _q["size"] / 2.0
+            _patches.append((_q["kind"], shapely.affinity.rotate(shapely.box(_q["x"] - _h, _q["z"] - _h, _q["x"] + _h, _q["z"] + _h), -_q.get("yaw", 0.0), use_radians=True)))
+for _kind, _shape in _patches:
+    if _kind == "island":
+        # (the piece of paving the point lies on, as far as 16 m from it)
+        _hit = [g.intersection(_shape.centroid.buffer(16.0)) for g in getattr(side, "geoms", [side]) if g.geom_type == "Polygon" and g.intersects(_shape)]
+        if not _hit:
+            continue                                       # (then it is a traffic island: see where those are made, below)
+        _shape, _kind = unary_union(_hit).buffer(0.3), "asphalt"
+    _shape = _shape.difference(bld_union.buffer(0.05)).intersection(map_box)
+    if _kind == "asphalt":
+        road_all = unary_union([road_all, _shape])
+        side = side.difference(_shape)
+    elif _kind == "paving":
+        side = unary_union([side, _shape])
+        road_all = road_all.difference(_shape)
+    else:
+        road_all = road_all.difference(_shape)
+        side = side.difference(_shape)
+if _patches:
+    print("  patches of asphalt, paving or bare ground:", len(_patches))
 # the asphalt that is laid on the ground: the same, without the thin spikes and slivers that the cutting-out of
 # buildings and the melting-together of shapes leave along its edge
 road_laid = road_all.buffer(-0.6, quad_segs=3).buffer(0.6, quad_segs=3)
 if road_decks:                                             # a road deck is its own asphalt, from side to side
     _deck_area = unary_union([LineString(dk[0]).buffer(dk[3] + 0.3, cap_style="flat") for dk in road_decks])
+    # (the asphalt carries on 0.4 m in under each end of a deck: cut off flush with it, a strip of ground a hand
+    # wide showed across the road at the joint)
+    _deck_cut = unary_union([shapely.ops.substring(LineString(dk[0]), 0.4, LineString(dk[0]).length - 0.4).buffer(dk[3] + 0.3, cap_style="flat")
+                             for dk in road_decks if LineString(dk[0]).length > 1.6])
     side = side.difference(_deck_area)
     # a scrap of sidewalk left standing against a deck (a corner the deck did not quite take) goes too
     side = unary_union([g for g in getattr(side, "geoms", [side]) if g.geom_type == "Polygon" and (g.area > 20.0 or g.distance(_deck_area) > 0.5)])
-    road_laid = road_laid.difference(_deck_area)
+    road_laid = road_laid.difference(_deck_cut)
 side = unary_union([g for g in getattr(side, "geoms", [side]) if g.geom_type == "Polygon" and g.area > 3.0])
 # No slits and no pinholes: a strip of ground under about two metres wide between two paved surfaces (or between
 # paving and a wall), and a small patch wholly closed in by paving, is paved over with asphalt.
@@ -1493,7 +1629,9 @@ _isles = []
 for _p in getattr(_pv, "geoms", [_pv]):
     for _ring in _p.interiors:
         _h = SPoly(_ring)
-        if _h.area < 14.0 or 4.0 * _h.area / _h.length < 2.2:
+        if any(_h.distance(shapely.Point(x_, z_)) < 1.0 for k_, x_, z_, r_ in overrides.PATCHES if k_ == "island"):
+            _fill.append(_h)                               # (one that someone who knows the place says is asphalt)
+        elif _h.area < 14.0 or 4.0 * _h.area / _h.length < 2.2:
             if _h.area >= 3.0 and not _h.buffer(-0.6).is_empty and _h.distance(side) > 0.3:
                 _isles.append(_h)                          # a traffic island: kerbed paving, not asphalt
             else:
@@ -1557,6 +1695,18 @@ while _i + 4 <= len(_ro):
 np.concatenate(_out).astype(np.float32).tofile(os.path.join(OUT, "roads.bin"))
 print("  gravel paths cut at the edge of paving:", _n_cut, " paved path ribbons no longer drawn:", _n_gone)
 
+# Hairline slits: where two paved outlines pass within a few centimetres of each other without touching (or
+# touch without being joined), the ground would show as a thin line between them. The paving is closed over
+# them, and what that adds is asphalt.
+_u = shapely.union_all([road_laid, side])
+_a0 = road_laid.area
+road_laid = _u.buffer(0.05, join_style=2).buffer(-0.05, join_style=2).difference(side).difference(bld_union.buffer(0.05)).intersection(map_box)
+if road_decks:
+    road_laid = road_laid.difference(_deck_cut)
+road_laid = shapely.multipolygons([g for g in shapely.get_parts(road_laid) if g.geom_type == "Polygon" and g.area > 1e-6])
+print("  hairline slits between paved outlines closed: %.1f m2 of asphalt added" % (road_laid.area - _a0))
+del _u
+
 # kept for the road sweep (tools/sweep.py), which compares these outlines with pictures of the finished ground
 import pickle as _pk
 _pk.dump({"road_all": shapely.to_wkb(road_all), "road_laid": shapely.to_wkb(road_laid), "side": shapely.to_wkb(side),
@@ -1587,7 +1737,7 @@ def triangles(poly, step=2.5):
     if part.any():
         cut = shapely.intersection(poly, boxes[part])
         cut = shapely.get_parts(cut)
-        cut = cut[(shapely.get_type_id(cut) == 3) & (shapely.area(cut) > 0.002)]
+        cut = cut[(shapely.get_type_id(cut) == 3) & (shapely.area(cut) > 1e-5)]      # (slivers are kept: a dropped one is a slit in the road)
         if len(cut):
             tri = shapely.get_parts(shapely.constrained_delaunay_triangles(cut))
             tri = shapely.get_parts(tri)
@@ -1598,7 +1748,7 @@ def triangles(poly, step=2.5):
         return np.zeros((0, 6), np.float32)
     co = np.concatenate(out).reshape(-1, 3, 2)
     area = np.abs((co[:, 1, 0] - co[:, 0, 0]) * (co[:, 2, 1] - co[:, 0, 1]) - (co[:, 1, 1] - co[:, 0, 1]) * (co[:, 2, 0] - co[:, 0, 0])) / 2
-    return co[area > 0.004].reshape(-1, 6).astype(np.float32)
+    return co[area > 1e-5].reshape(-1, 6).astype(np.float32)
 
 
 def pieces(lines, solid):
@@ -1672,6 +1822,8 @@ def cells_of(geom):
 # running downstream; a stretch stops where a road lies over it (a culvert). lakes.bin: per lake
 # [number of triangles, water level] then the triangles (x, z three times each).
 water_out = []
+wet1 = H1 < 0.3                                        # where there really is water, per 1 m square: the sea, and below, lakes and rivers
+_river_pieces = []                                     # (half width, [(x, z, level), ...]) as written, for the water grid below
 n_water = 0
 for half, big_one, pts in rivers:
     P = np.asarray(pts)
@@ -1683,12 +1835,14 @@ for half, big_one, pts in rivers:
             continue
         if len(piece) >= 3:
             water_out += [float(len(piece)), half, big_one]
+            _river_pieces.append((half, []))
             for x, z, y in piece:
                 y = min(y, height_at(x, z) + 0.45)
                 for dst, dhs, dpoly, _dh in road_decks:            # under a road deck: below it
                     if dpoly.buffer(half + 1.0).contains(shapely.Point(x, z)):
                         y = min(y, float(_deck_height(dst, dhs, np.float64(x), np.float64(z))) - 0.6)
                 water_out += [x, z, y]
+                _river_pieces[-1][1].append((x, z, y))
             n_water += 1
         piece = []
 np.asarray(water_out, np.float32).tofile(os.path.join(OUT, "water.bin"))
@@ -1709,18 +1863,84 @@ for ring in lakes:
         if len(tris):
             lake_out += [float(len(tris)), level] + tris.ravel().tolist()
             n_lakes += 1
+            # The laser sees only the surface of a lake, so the ground there is the surface. It is given a bed:
+            # shallow at the shore, deeper the further out, 4.5 m at most (so a lake can be swum in).
+            _bx0, _bz0, _bx1, _bz1 = g.bounds
+            _i0, _i1 = max(int(_bx0 - X0) - 1, 0), min(int(_bx1 - X0) + 3, FW)
+            _j0, _j1 = max(int(_bz0 - Z0) - 1, 0), min(int(_bz1 - Z0) + 3, FH)
+            _gx, _gz = np.meshgrid(X0 + np.arange(_i0, _i1), Z0 + np.arange(_j0, _j1))
+            _in = shapely.contains_xy(g, _gx, _gz) & ~shapely.contains_xy(road_all, _gx, _gz)
+            if _in.any():
+                from scipy import ndimage as _ndl
+                _dist = _ndl.distance_transform_edt(_in)
+                _bed = level - 0.12 - np.clip(0.15 + 0.3 * _dist, 0.0, 4.5)
+                _win = H1[_j0:_j1, _i0:_i1]
+                H1[_j0:_j1, _i0:_i1] = np.where(_in, np.minimum(_win, _bed), _win).astype(np.float32)
+                wet1[_j0:_j1, _i0:_i1] |= _in
 np.asarray(lake_out, np.float32).tofile(os.path.join(OUT, "lakes.bin"))
 print("  running water stretches:", n_water, "lakes:", n_lakes)
-plaza_tris = []
-if plaza_poly is not None:
-    _floor = plaza_poly.buffer(22.0).difference(bld_union.buffer(0.05)).difference(road_all).difference(side)
-    _floor = [g for g in getattr(_floor, "geoms", [_floor]) if g.geom_type == "Polygon" and g.intersects(plaza_poly)]
-    if _floor:
-        _floor = max(_floor, key=lambda g: g.intersection(plaza_poly).area).buffer(0.25).difference(bld_union)
-        for g in getattr(_floor, "geoms", [_floor]):
-            if g.geom_type == "Polygon" and g.area > 1.0:
-                plaza_tris += [round(float(v), 2) for v in triangles(g, 2.0).ravel()]
 
+# Where the water is, for the game to ask (scripts/world.gd, water_at): world/waterlevel.bin, a grid of 2 m
+# squares in blocks of 100 m, only the blocks that have a lake or running water in them. Per block: the cell
+# (two int16), then 50 x 50 water levels (int16, centimetres; -32768 where there is no water), then the flow
+# east and the flow south (int8 each, steps of 0.05 m/s). Lakes stand still; a river flows down its line, faster
+# where it is steep (as shaders/river.gdshader draws it). The sea is not in the file: it is wherever the ground
+# lies under sea level, and its surface is at 0.
+_wl = {}
+
+
+def _wl_put(x, z, level, fx, fz):
+    gx, gz = np.floor(np.asarray(x) / 2.0).astype(int), np.floor(np.asarray(z) / 2.0).astype(int)
+    cx, cz = gx // 50, gz // 50
+    lv = np.clip(np.round(np.asarray(level) * 100.0), -32000, 32000).astype(np.int16)
+    ax = np.clip(np.round(np.asarray(fx) * 20.0), -127, 127).astype(np.int8)
+    az = np.clip(np.round(np.asarray(fz) * 20.0), -127, 127).astype(np.int8)
+    for key in set(zip(cx.tolist(), cz.tolist())):
+        m = (cx == key[0]) & (cz == key[1])
+        b = _wl.setdefault(key, [np.full((50, 50), -32768, np.int16), np.zeros((50, 50), np.int8), np.zeros((50, 50), np.int8)])
+        b[0][gz[m] - key[1] * 50, gx[m] - key[0] * 50] = lv[m]
+        b[1][gz[m] - key[1] * 50, gx[m] - key[0] * 50] = ax[m]
+        b[2][gz[m] - key[1] * 50, gx[m] - key[0] * 50] = az[m]
+
+
+_j = 0
+_ld = np.asarray(lake_out, np.float64)
+while _j + 2 <= len(_ld):                                  # lakes: every 2 m square whose middle lies on the lake
+    _nt, _level = int(_ld[_j]), _ld[_j + 1]
+    _t = _ld[_j + 2:_j + 2 + _nt * 6].reshape(_nt, 3, 2)
+    _j += 2 + _nt * 6
+    _lake = unary_union(shapely.polygons(_t))
+    _bx0, _bz0, _bx1, _bz1 = _lake.bounds
+    _gx, _gz = np.meshgrid(np.arange(math.floor(_bx0 / 2.0) * 2.0 + 1.0, _bx1, 2.0), np.arange(math.floor(_bz0 / 2.0) * 2.0 + 1.0, _bz1, 2.0))
+    _gx, _gz = _gx.ravel(), _gz.ravel()
+    _in = shapely.contains_xy(_lake, _gx, _gz)
+    if _in.any():
+        _wl_put(_gx[_in], _gz[_in], np.full(int(_in.sum()), _level), np.zeros(int(_in.sum())), np.zeros(int(_in.sum())))
+for _half, _piece in _river_pieces:                        # running water: across the ribbon, every metre along it
+    _P = np.asarray(_piece, np.float64)
+    for _k in range(len(_P) - 1):
+        _a, _b = _P[max(_k - 1, 0)], _P[min(_k + 2, len(_P) - 1)]
+        _run = max(float(np.hypot(_b[0] - _a[0], _b[1] - _a[1])), 0.01)
+        _speed = 0.35 + 1.6 * min(max((_a[2] - _b[2]) / _run * 2.5, 0.0), 1.0)
+        _d = _P[_k + 1, :2] - _P[_k, :2]
+        _len = max(float(np.hypot(_d[0], _d[1])), 0.01)
+        _d /= _len
+        _t = np.arange(0.0, _len + 0.5, 1.0) / _len
+        _o = np.arange(-(_half + 0.35), _half + 0.36, 1.0)
+        _tt, _oo = np.meshgrid(np.clip(_t, 0.0, 1.0), _o)
+        _x = _P[_k, 0] + _d[0] * _tt * _len + _d[1] * _oo
+        _z = _P[_k, 1] + _d[1] * _tt * _len - _d[0] * _oo
+        _y = _P[_k, 2] + (_P[_k + 1, 2] - _P[_k, 2]) * _tt
+        _wl_put(_x.ravel(), _z.ravel(), _y.ravel(), np.full(_x.size, _d[0] * _speed), np.full(_x.size, _d[1] * _speed))
+        # (the ground under a river is not coloured as water any more: note of 18 Nov. Where the rivers are is kept in the
+        # water grid just written; the dark blue ground under and beside the running water is gone.)
+with open(os.path.join(OUT, "waterlevel.bin"), "wb") as f:
+    f.write(np.asarray([len(_wl)], np.int32).tobytes())
+    for (cx, cz), b in sorted(_wl.items()):
+        f.write(np.asarray([cx, cz], np.int16).tobytes())
+        f.write(b[0].tobytes()); f.write(b[1].tobytes()); f.write(b[2].tobytes())
+print("  water grid: %d blocks with a lake or running water (%.1f MB)" % (len(_wl), len(_wl) * 10004 / 1e6))
+del _wl
 # The terrace in front of the town hall: level with its entrance, and a flight of long steps down to the square
 # (the laser model has a smooth slope there). The ground under the steps is a ramp; the game builds the steps.
 radhus_steps = None
@@ -1763,6 +1983,27 @@ if _rh is not None and plaza_poly is not None:
                             "out": out, "steps": cfg["steps"], "tread": cfg["tread"]}
             print("  town hall terrace at", round(top, 2), "over the square at", round(low, 2))
 
+plaza_tris = []
+if plaza_poly is not None:
+    _floor = plaza_poly.buffer(22.0).difference(bld_union.buffer(0.05)).difference(road_all).difference(side)
+    _floor = [g for g in getattr(_floor, "geoms", [_floor]) if g.geom_type == "Polygon" and g.intersects(plaza_poly)]
+    if _floor:
+        _floor = max(_floor, key=lambda g: g.intersection(plaza_poly).area).buffer(0.25).difference(bld_union)
+        if radhus_steps is not None:
+            # no tiles where the town hall's steps stand: the tiles are laid in 2 m pieces, and a piece reaching
+            # from the terrace down to the square cut slantwise through the steps (note of 17 Nov)
+            _a, _n = np.array(radhus_steps["a"]), np.array(radhus_steps["n"])
+            _t = (np.array(radhus_steps["b"]) - _a) / float(np.hypot(*(np.array(radhus_steps["b"]) - _a)))
+            _ln = float(np.hypot(*(np.array(radhus_steps["b"]) - _a)))
+            _d0 = radhus_steps["out"] - radhus_steps["tread"] - 0.05
+            _d1 = radhus_steps["out"] + radhus_steps["tread"] * (radhus_steps["steps"] - 1) + 0.05
+            _floor = _floor.difference(SPoly([_a + _t * 0.5 + _n * _d0, _a + _t * (_ln - 0.5) + _n * _d0,
+                                              _a + _t * (_ln - 0.5) + _n * _d1, _a + _t * 0.5 + _n * _d1]))
+        for g in getattr(_floor, "geoms", [_floor]):
+            if g.geom_type == "Polygon" and g.area > 1.0:
+                plaza_tris += [round(float(v), 2) for v in triangles(g, 2.0).ravel()]
+
+
 # A single cell standing tens of metres above all its neighbours is a fault in the data or in the working
 # of it, not ground: it would stand in the landscape as a pillar. Such cells take their neighbours' height.
 from scipy import ndimage as _ndi
@@ -1794,6 +2035,15 @@ for _geom in (road_all, side):
 pmask = np.asarray(_pm) > 0
 del _pm, _pd
 _loose = pmask & ~graded & (H1 > 0.5)
+if road_decks:
+    # (not under a bridge deck: there the ground is the river's bed, cut out for it, and evening it out with the
+    # road at both ends filled the bed in again: a wall of ground under the bridge)
+    _dm = Image.new("L", (FW, FH), 0)
+    _dd = ImageDraw.Draw(_dm)
+    for g in getattr(_deck_area.buffer(1.0), "geoms", [_deck_area.buffer(1.0)]):
+        _dd.polygon([(x - X0, z - Z0) for x, z in g.exterior.coords], fill=255)
+    _loose &= ~(np.asarray(_dm) > 0)
+    del _dm, _dd
 if _loose.any():
     _src = (pmask & graded & (H1 > 0.5)).astype(np.float32)
     _wg = ndimage.gaussian_filter(_src, 3.0)
@@ -1826,6 +2076,43 @@ if _low.any():
 print("  paving brought up out of the water:", int(_low.sum()), "m2")
 del _low
 H1 = (np.clip(np.round((H1 - H_OFFSET) / H_SCALE), 0, 65535) * H_SCALE + H_OFFSET).astype(np.float32)      # as the game will read it
+# Where a river's last stretch to the fjord stands dry above sea level (the laser saw a bank there), a channel is
+# cut down under the sea's surface so that the water in the river's mouth is the sea's own. Paving is left alone.
+for _line, _half, _bed in overrides.SEA_CHANNELS:
+    _ch = LineString(_line).buffer(_half, cap_style="flat")
+    _bx0_, _bz0_, _bx1_, _bz1_ = _ch.bounds
+    _i0, _i1 = max(int(_bx0_ - X0) - 1, 0), min(int(_bx1_ - X0) + 3, FW)
+    _j0, _j1 = max(int(_bz0_ - Z0) - 1, 0), min(int(_bz1_ - Z0) + 3, FH)
+    _gx, _gz = np.meshgrid(X0 + np.arange(_i0, _i1, dtype=float), Z0 + np.arange(_j0, _j1, dtype=float))
+    _m = shapely.contains_xy(_ch, _gx, _gz) & ~ndimage.binary_dilation(pmask[_j0:_j1, _i0:_i1], iterations=2)
+    _sub = H1[_j0:_j1, _i0:_i1]
+    _sub[_m] = np.minimum(_sub[_m], _bed)
+    print("  channel to the sea cut:", int(_m.sum()), "m2")
+_sunk_walls = []
+for _sx, _sz in overrides.SUNK_LOTS:
+    _sl = _sunk_lot(_sx, _sz)
+    if _sl is None:
+        print("  no car park found at", _sx, _sz)
+        continue
+    _in, _rb, _edge = _sl
+    _inner = _in.difference(_rb.buffer(6.0))
+    if _inner.is_empty:
+        continue
+    _bx0_, _bz0_, _bx1_, _bz1_ = _in.bounds
+    _i0, _i1 = max(int(_bx0_ - X0) - 1, 0), min(int(_bx1_ - X0) + 3, FW)
+    _j0, _j1 = max(int(_bz0_ - Z0) - 1, 0), min(int(_bz1_ - Z0) + 3, FH)
+    _gx, _gz = np.meshgrid(X0 + np.arange(_i0, _i1, dtype=float), Z0 + np.arange(_j0, _j1, dtype=float))
+    _mi, _mn = shapely.contains_xy(_in, _gx, _gz), shapely.contains_xy(_inner, _gx, _gz)
+    _sub = H1[_j0:_j1, _i0:_i1]
+    _A = np.c_[_gx[_mn], _gz[_mn], np.ones(int(_mn.sum()))]
+    _co = np.linalg.lstsq(_A, _sub[_mn].astype(float), rcond=None)[0]
+    _plane = _co[0] * _gx + _co[1] * _gz + _co[2]
+    _drop = float((_sub[_mi] - _plane[_mi]).max())
+    _sub[_mi] = np.minimum(_sub[_mi], _plane[_mi]).astype(np.float32)
+    for g in getattr(_edge, "geoms", [_edge]):
+        if g.geom_type == "LineString" and g.length > 3.0:
+            _sunk_walls.append([(float(x), float(z)) for x, z in g.coords])
+    print("  car park laid flat below its road: up to", round(_drop, 2), "m lower, wall", round(sum(LineString(q).length for q in _sunk_walls)), "m")
 # The paved surface has heights of its own, fixed here once: the paved ground, carried one step out past its
 # edge, so that the rim of the asphalt takes its height from the road and not from the bank beside it.
 # It is also a little smoother than the ground it was read from (a road has no dents a metre across).
@@ -1890,7 +2177,7 @@ def with_heights(q):
     if not len(q):
         return np.zeros((0, q.shape[1] * 3 // 2 if q.ndim == 2 else 0), np.float32)
     q = q.reshape(len(q), -1, 2)
-    y = surface(q[:, :, 0], q[:, :, 1])
+    y = laid(q[:, :, 0], q[:, :, 1])     # (straight along the lines of the 2.5 m squares, so neighbours agree where one has a corner and the other has none)
     return np.stack([q[:, :, 0], y, q[:, :, 1]], 2).reshape(len(q), -1).astype(np.float32)
 
 
@@ -1899,11 +2186,15 @@ def with_heights(q):
 # for each end; the open side is to the right of the direction). y is the ground there; the game lifts asphalt
 # and sidewalk off it.
 paved = {}
+_meant = {}                                            # cell -> [asphalt, sidewalk] square metres meant (for tools/holes.py)
 for name, geom in (("A", road_laid), ("S", side)):
     for key, part in cells_of(geom):
-        tris = [triangles(g) for g in getattr(part, "geoms", [part]) if g.geom_type == "Polygon" and g.area > 0.05]
+        polys = [g for g in getattr(part, "geoms", [part]) if g.geom_type == "Polygon" and g.area > 1e-4]      # (specks too: a dropped one is a hole)
+        tris = [triangles(g) for g in polys]
         if tris:
             paved.setdefault(key, {})[name] = np.concatenate(tris)
+            _meant.setdefault("%d,%d" % key, [0.0, 0.0])["AS".index(name)] = round(sum(g.area for g in polys), 3)
+json.dump(_meant, open(os.path.join(OUT, "paved_area.json"), "w"), separators=(",", ":"))
 for name, lines, solid in (("K", side.boundary, side), ("E", road_laid.boundary.difference(side.buffer(0.4)).difference(_deck_area.buffer(0.3)) if road_decks else road_laid.boundary.difference(side.buffer(0.4)), road_laid)):
     for key, part in cells_of(lines):
         seg = pieces(part, solid)
@@ -1912,9 +2203,12 @@ for name, lines, solid in (("K", side.boundary, side), ("E", road_laid.boundary.
 # The ground under the paving is then made to agree with it: each ground point under a triangle is put on that
 # triangle, so the ground cannot stand up through the asphalt between a triangle's corners.
 _all_tris = np.concatenate([d[k] for d in paved.values() for k in "AS" if k in d and len(d[k])]).astype(np.float64).reshape(-1, 3, 2)
-_y = surface(_all_tris[:, :, 0], _all_tris[:, :, 1])
+_y = laid(_all_tris[:, :, 0], _all_tris[:, :, 1])
 _ax, _az = _all_tris[:, 0, 0], _all_tris[:, 0, 1]
 _e1, _e2 = _all_tris[:, 1] - _all_tris[:, 0], _all_tris[:, 2] - _all_tris[:, 0]
+# A car park that lies lower than the road beside it (note of 18 Nov: the laser's ground was smoothed into a slope from
+# the road down into the lot, and parked cars stood in it). The lot is laid flat at its own level right up to the
+# road, and a concrete wall stands along that edge (put out with the street furniture).
 _den = _e1[:, 0] * _e2[:, 1] - _e1[:, 1] * _e2[:, 0]
 _okt = np.abs(_den) > 1e-6
 _bx0 = np.floor(_all_tris[:, :, 0].min(1) - X0).astype(int)
@@ -2105,7 +2399,14 @@ _r[:_laid.shape[0], :_laid.shape[1]][pmask[:_laid.shape[0], :_laid.shape[1]]] = 
 mask_r = Image.fromarray(_r).resize((MW, MH), Image.BOX)
 del _r, _laid
 mask_g = path_im.resize((MW, MH), Image.BOX)
-mask_a = Image.fromarray(255 - np.asarray(lake_im.resize((MW, MH), Image.BOX)))
+# The water colour of the ground, only where there is water: the map's outline of a river takes in its banks and
+# the slope beside a fall, and those were painted as water all the way up.
+_wet = ndimage.binary_dilation(wet1, iterations=1)
+_lk = np.asarray(lake_im).copy()
+_hh, _ww = min(_lk.shape[0], _wet.shape[0]), min(_lk.shape[1], _wet.shape[1])
+_lk[:_hh, :_ww][~_wet[:_hh, :_ww]] = 0
+mask_a = Image.fromarray(255 - np.asarray(Image.fromarray(_lk).resize((MW, MH), Image.BOX)))
+del _wet, _lk
 Image.merge("RGBA", (mask_r, mask_g, mask_b, mask_a)).save(os.path.join(OUT, "mask.png"))
 # a second mask for what else covers the ground: R mown grass (gardens count half), G fields, B bog, A bare rock and sand
 garden = np.clip(blur(np.clip(bld_g * 5, 0, 1), 2.5) * 2.2, 0, 0.6)           # around houses
@@ -2131,6 +2432,8 @@ _T = np.asarray(trees, np.float32)
 _on = shapely.contains_xy(_keep_out, _T[:, 0].astype(float), _T[:, 1].astype(float))
 for _x, _z in overrides.NO_TREES:                          # and the ones someone who knows the place says are not there
     _on |= np.hypot(_T[:, 0] - _x, _T[:, 1] - _z) < 1.5
+for _x, _z, _r in overrides.NO_TREES_IN:                   # and whole patches of them
+    _on |= np.hypot(_T[:, 0] - _x, _T[:, 1] - _z) < _r
 if sports_clear is not None:
     _on |= shapely.contains_xy(sports_clear, _T[:, 0].astype(float), _T[:, 1].astype(float))
 for q in overrides.PORTALS:                                # nor in the mouth of a way into the hill
@@ -2416,8 +2719,31 @@ try:                                                      # and from Vegbilder's
             real_colours[_k] = dict(real_colours.get(_k, {}), **_v)
 except OSError:
     pass
+# The readings are not all of the wall. Looked at one by one (17 Nov), three kinds were wrong, and are handled here:
+# the colour of a clear sky is the sky seen past the house, and a dull olive is leaves in front of it (or the wall
+# of a tunnel): both are left out. A pale blue-grey is a white or grey wall in shade: it is taken as that.
+import colorsys as _cs
+_dropped = [0, 0, 0]
+for _k in list(real_colours):
+    _w = real_colours[_k].get("wall")
+    if _w:
+        _h, _s, _v = _cs.rgb_to_hsv(_w[0] / 255.0, _w[1] / 255.0, _w[2] / 255.0)
+        if 0.5 < _h < 0.68 and _s > 0.28 and _v > 0.45:
+            del real_colours[_k]["wall"]
+            _dropped[0] += 1
+        elif 0.11 < _h < 0.47 and _s > 0.18 and _v < 0.62:
+            del real_colours[_k]["wall"]
+            _dropped[1] += 1
+        elif 0.48 < _h < 0.72 and _s <= 0.28:
+            real_colours[_k]["wall"] = [238, 238, 232] if _v > 0.5 else [150, 150, 148]
+            _dropped[2] += 1
+print("  photo readings left out as sky: %d, as leaves: %d; taken as a white or grey wall in shade: %d" % tuple(_dropped))
 photographed = set()
 n_real = [0, 0]
+colour_from = []                                          # for each building, where its wall colour is from: photo, osm, hand, rule (then neighbour)
+# what a wall is made of, where the map says (building:material): the colour it has when nothing else gives one
+MATERIAL_COLOUR = {"brick": (150, 82, 62), "wood": None, "concrete": (170, 168, 162), "plaster": (222, 214, 198), "stone": (140, 136, 128),
+                   "metal": (150, 156, 162), "glass": (120, 140, 150)}
 
 buildings, fires = [], []
 centres = []
@@ -2487,7 +2813,8 @@ for (t, pts, a, cx, cz, osm_id), (ymin, ymax) in zip(prelim, grounds):
     style = style_of(kind, a, h, roof, r)
     if a < 400 and any(m.contains(shapely.Point(cx, cz)) for m in museums):
         style = OLD_TIMBER                                    # the old farm buildings of the open-air museum
-    wall = colour_tag(t.get("building:colour")) or r.choice(WALLS[style])
+    wall = colour_tag(t.get("building:colour")) or MATERIAL_COLOUR.get(t.get("building:material")) or r.choice(WALLS[style])
+    src = "osm" if (colour_tag(t.get("building:colour")) or MATERIAL_COLOUR.get(t.get("building:material"))) else "rule"
     pitch, share = roof_shape(roof, a)
     roof_col = colour_tag(t.get("roof:colour")) or r.choice(ROOF_FLAT if share < 0.3 else ROOF_SHEET if style in SHEET_ROOFED else ROOF_TILE)
     if style == OLD_TIMBER:
@@ -2507,14 +2834,17 @@ for (t, pts, a, cx, cz, osm_id), (ymin, ymax) in zip(prelim, grounds):
             style = MAIN_STREET
             wall = colour_tag(t.get("building:colour")) or r.choice(WALLS[style])
     real = real_colours.get(str(osm_id), {})
-    if "wall" in real and not colour_tag(t.get("building:colour")):
+    # (a colour read from a photo wins over one written on the map; a colour set by hand wins over both)
+    if "wall" in real:
         wall = tuple(real["wall"])
         photographed.add(len(buildings))
         n_real[0] += 1
-    if "roof" in real and share >= 0.3 and style != OLD_TIMBER and not colour_tag(t.get("roof:colour")):
+        src = "photo"
+    if "roof" in real and share >= 0.3 and style != OLD_TIMBER:
         roof_col = tuple(real["roof"])
         n_real[1] += 1
     if "wall" in known:
+        src = "hand"
         wall = tuple(known["wall"])
     if "roof" in known:
         roof_col = tuple(known["roof"])
@@ -2535,6 +2865,28 @@ for (t, pts, a, cx, cz, osm_id), (ymin, ymax) in zip(prelim, grounds):
     buildings.append([small, round(h, 1), round(ymin, 2), round(ymax, 2), style, flat,
                       {"f": roof["f"], "w": walls, "s": roof["s"], "top": roof["top"], "sf": fronts}, list(wall), list(roof_col), name, osm_id])
     centres.append((cx, cz))
+    colour_from.append(src)
+
+# A building nobody has read a colour for takes one that was read, from a building of its own kind near by
+# (the nearest six of that kind within 350 m, one of them by lot): a street of unread houses then looks like
+# its neighbours, not like a default. Where there is none near, the colour by rule stands.
+_read = [i for i, sc in enumerate(colour_from) if sc in ("photo", "osm", "hand") and buildings[i][4] != OUTBUILDING]
+_by_style = {}
+for i in _read:
+    _by_style.setdefault(buildings[i][4], []).append(i)
+from scipy.spatial import cKDTree as _KD
+_trees = {st: (_KD([centres[i] for i in ids]), ids) for st, ids in _by_style.items() if len(ids) >= 3}
+for i, b in enumerate(buildings):
+    if colour_from[i] != "rule" or b[4] in (OUTBUILDING, OLD_TIMBER, MAIN_STREET) or b[4] not in _trees:
+        continue
+    tree, ids = _trees[b[4]]
+    d, j = tree.query(centres[i], k=min(6, len(ids)), distance_upper_bound=350.0)
+    near = [ids[jj] for dd, jj in zip(np.atleast_1d(d), np.atleast_1d(j)) if np.isfinite(dd)]
+    if len(near) >= 2:
+        # (the paint of its own kind of house nearest that colour: the mix of the neighbourhood, in clean colours)
+        seen = buildings[random.Random(b[10]).choice(near)][7]
+        b[7] = list(min(WALLS[b[4]], key=lambda c: (c[0] - seen[0]) ** 2 + (c[1] - seen[1]) ** 2 + (c[2] - seen[2]) ** 2))
+        colour_from[i] = "neighbour"
 
 # a garage or shed is painted like the house it belongs to
 from scipy.spatial import cKDTree
@@ -2551,6 +2903,8 @@ print("  roofs replaced by a plain one:", sum(1 for r in roof_cache.values() if 
 print("  large buildings the laser did not see, given a usual height:", n_unseen[0])
 print("  measured from laser data:", measured, "flat/pitched/hipped or more:", roof_stats)
 print("  buildings:", len(buildings), "with a wall colour from photos:", n_real[0], "with a roof colour from photos:", n_real[1])
+print("  wall colours: from photos %d, from the map's own tags %d, set by hand %d, from read neighbours %d, by rule %d" % tuple(
+    sum(1 for sc in colour_from if sc == k) for k in ("photo", "osm", "hand", "neighbour", "rule")))
 
 # ---------------------------------------------------------------- street furniture
 # props.bin (float32, 8 per prop): [kind, x, y, z, a, b, c, d]. A thing standing at a point has a = the way
@@ -2680,6 +3034,8 @@ for pts in power_lines:
         xb, zb = pts[min(i + 1, len(pts) - 1)]
         put(PYLON, x, z, yaw_of(xb - xa, zb - za))
     run(WIRES, pts, 400.0, 21.0)
+for pts in _sunk_walls:
+    run(WALL, pts)
 
 # lamps along lit streets and the bigger roads, where the map has none
 lamp_tree = cKDTree(_lamps) if _lamps else None
@@ -3085,6 +3441,10 @@ props = [tuple(pr[:7]) + (0.0,) if int(pr[0]) in _linear or int(pr[0]) == WIRES 
 print("  double railings and fences removed:", n_double)
 _z = _zone_of(0.4)[0]
 name_signs = [q for q in name_signs if not shapely.contains_xy(_z, q[0], q[2])]
+for _sx, _sz in overrides.NAME_SIGN_SWAP:                  # a sign whose two plates hang the wrong way round
+    for q in name_signs:
+        if math.hypot(q[0] - _sx, q[2] - _sz) < 2.0:
+            q[4], q[5] = q[5], q[4]
 print("  on the carriageway: moved", n_moved, "dropped", n_dropped)
 np.asarray(props, np.float32).tofile(os.path.join(OUT, "props.bin"))
 print("  boats:", n_boats, "ferries:", len(_quays))
@@ -3145,6 +3505,120 @@ from kartverket import backdrop
 BACK_HALF, BACK_N = 48000.0, 641
 backdrop(BACK_HALF, 100, BACK_N).tofile(os.path.join(OUT, "backdrop.bin"))
 
+# ---------------------------------------------------------------- places set up by hand (notes of 18 Nov)
+# A McDonald's with a drive-through lane round it and a place to order, a petrol station's forecourt, the fire
+# station's doors, a building going up in a gap on Storgata, a bed of roses in a roundabout. The game builds them
+# (scripts/molde.gd) from what is worked out here against the outlines of the buildings.
+_site_polys = {_i: SPoly(q) for _t, q, _i in buildings_raw if len(q) >= 3}
+_site_tree = shapely.STRtree(list(_site_polys.values()))
+_site_list = list(_site_polys.values())
+
+
+def _site_edge(poly, at, toward, long_=False):
+    """The wall of a building nearest a point: its ends, its direction, the way it faces (toward the other point), its length."""
+    co = list(poly.exterior.coords)
+    best = None
+    for a_, b_ in zip(co, co[1:]):
+        if math.dist(a_, b_) > 1.0:
+            d_ = LineString([a_, b_]).distance(shapely.Point(at))
+            if long_ and d_ < 14.0:
+                d_ = -math.dist(a_, b_)                      # (the longest wall near by, not a short return beside it)
+            if best is None or d_ < best[0]:
+                best = (d_, a_, b_)
+    _d, a_, b_ = best
+    ln = math.dist(a_, b_)
+    tx, tz = (b_[0] - a_[0]) / ln, (b_[1] - a_[1]) / ln
+    nx, nz = tz, -tx
+    if (toward[0] - (a_[0] + b_[0]) / 2) * nx + (toward[1] - (a_[1] + b_[1]) / 2) * nz < 0:
+        nx, nz = -nx, -nz
+    return a_, b_, (tx, tz), (nx, nz), ln
+
+
+def _site_ray(x, z, dx, dz, reach=30.0):
+    """How far from a point to the nearest building that way."""
+    line = LineString([(x, z), (x + dx * reach, z + dz * reach)])
+    best = reach
+    for j in _site_tree.query(line):
+        hit = line.intersection(_site_list[j])
+        if not hit.is_empty:
+            best = min(best, shapely.Point(x, z).distance(hit))
+    return best
+
+
+sites = {}
+for q in overrides.SITES:
+    kind = q["kind"]
+    poly = _site_polys.get(q.get("osm_id"))
+    if "osm_id" in q and poly is None:
+        print("  site", kind, ": building", q["osm_id"], "not found")
+        continue
+    if kind == "drive_through":
+        lane = poly.buffer(4.6, join_style=1, quad_segs=3).exterior
+        pts = [lane.interpolate(d_).coords[0] for d_ in np.arange(0.0, lane.length, 1.5)]
+        at_ = lane.project(shapely.Point(q["order"]))
+        pa, pb = lane.interpolate(at_ - 0.5), lane.interpolate(at_ + 0.5)
+        c_ = poly.centroid
+        out_ = np.array([pa.x - c_.x, pa.y - c_.y])
+        out_ /= max(float(np.hypot(*out_)), 1e-6)
+        post = np.array([pa.x, pa.y]) - out_ * 2.1                          # on the building's side of the lane
+        sign = poly.buffer(10.0).exterior.interpolate(poly.buffer(10.0).exterior.project(shapely.Point(q["sign"])))
+        sites.setdefault(kind, []).append({"lane": [round(v, 2) for p_ in pts for v in p_], "post": [round(float(post[0]), 2), round(float(post[1]), 2), round(float(out_[0]), 3), round(float(out_[1]), 3)],
+                                           "sign": [round(sign.x, 2), round(sign.y, 2)], "name": q["name"]})
+    elif kind == "doors":
+        a_, b_, t_, n_, ln = _site_edge(poly, q["at"], q["toward"], True)
+        k = max(1, min(q.get("count", 5), int((ln - 2.0) / 5.0)))
+        mid = np.array([(a_[0] + b_[0]) / 2, (a_[1] + b_[1]) / 2])
+        rows = []
+        for i in range(k):
+            c_ = mid + np.array(t_) * (i - (k - 1) / 2) * 5.0
+            rows.append([round(float(c_[0]), 2), round(height_at(float(c_[0] + n_[0] * 0.5), float(c_[1] + n_[1] * 0.5)), 2), round(float(c_[1]), 2), round(n_[0], 3), round(n_[1], 3)])
+        sites.setdefault(kind, []).append({"doors": rows, "colour": q["colour"], "wide": 4.0, "tall": 4.2})
+    elif kind == "forecourt":
+        a_, b_, t_, n_, ln = _site_edge(poly, q["at"], q["toward"])
+        hit = LineString([a_, b_]).interpolate(LineString([a_, b_]).project(shapely.Point(q["at"])))
+        c_ = np.array([hit.x, hit.y]) + np.array(n_) * q.get("out", 13.0)
+        sites.setdefault(kind, []).append({"at": [round(float(c_[0]), 2), round(height_at(float(c_[0]), float(c_[1])), 2), round(float(c_[1]), 2)], "along": [round(t_[0], 3), round(t_[1], 3)], "name": q["name"]})
+    elif kind == "construction":
+        cx, cz = q["at"]
+        left = min(_site_ray(cx, z_, -1, 0) for z_ in (cz - 4, cz, cz + 3))
+        right = min(_site_ray(cx, z_, 1, 0) for z_ in (cz - 4, cz, cz + 3))
+        back = min(_site_ray(x_, cz, 0, -1) for x_ in (cx - left + 1.0, cx, cx + right - 1.0))
+        box = [round(cx - left + 0.2, 2), round(cz - back + 0.2, 2), round(cx + right - 0.2, 2), round(q["front"], 2)]
+        sites.setdefault(kind, []).append({"box": box, "y": round(max(height_at(cx, q["front"]), height_at(cx, cz)), 2), "floors": q["floors"]})
+        print("  construction site:", box)
+    elif kind == "rose_round":
+        # in the middle of the ring of paving it lies in (the island of a roundabout), filling the hole in it
+        at_, r_ = list(q["at"]), q["r"]
+        for g in getattr(side, "geoms", [side]):
+            if g.geom_type == "Polygon" and g.distance(shapely.Point(q["at"])) < 6.0:
+                holes_ = [SPoly(h) for h in g.interiors if SPoly(h).distance(shapely.Point(q["at"])) < 3.0]
+                if holes_:
+                    c_ = holes_[0].centroid
+                    at_, r_ = [round(c_.x, 2), round(c_.y, 2)], round(math.sqrt(holes_[0].area / math.pi) - 0.1, 2)
+        sites.setdefault(kind, []).append(at_ + [r_])
+    elif kind == "tower":
+        a_, b_, t_, n_, ln = _site_edge(poly, q["at"], q["toward"])
+        hit = LineString([a_, b_]).interpolate(LineString([a_, b_]).project(shapely.Point(q["at"])))
+        c_ = np.array([hit.x, hit.y]) + np.array(n_) * (q["side"] / 2 - 0.05)
+        sites.setdefault(kind, []).append({"at": [round(float(c_[0]), 2), round(height_at(float(c_[0]), float(c_[1])), 2), round(float(c_[1]), 2)], "out": [round(n_[0], 3), round(n_[1], 3)],
+                                           "side": q["side"], "tall": q["tall"], "colour": q["colour"]})
+    elif kind == "wall_sign":
+        a_, b_, t_, n_, ln = _site_edge(poly, q["at"], q["toward"], q.get("long", False))
+        hit = LineString([a_, b_]).interpolate(LineString([a_, b_]).project(shapely.Point(q["at"])))
+        sites.setdefault(kind, []).append({"at": [round(hit.x, 2), round(height_at(hit.x + n_[0] * 0.5, hit.y + n_[1] * 0.5), 2), round(hit.y, 2)], "out": [round(n_[0], 3), round(n_[1], 3)],
+                                           "text": q["text"], "ink": q["ink"], "back": q.get("back"), "tall": q["tall"], "up": q["up"], "door": q.get("door", False)})
+# A raised rose bed that fills the corner it stands in: out to the walls on every side that has one within reach.
+rose_beds = []
+for q in overrides.ROSE_BEDS:
+    x_, z_, lx, lz, yaw_ = q[:5]
+    if len(q) > 5 and q[5] == "fit":
+        w_, e_, n_, s_ = (_site_ray(x_, z_, -1, 0, 8.0), _site_ray(x_, z_, 1, 0, 8.0), _site_ray(x_, z_, 0, -1, 8.0), _site_ray(x_, z_, 0, 1, 8.0))
+        w_, e_ = (w_ - 0.05 if w_ < 7.9 else lx / 2), (e_ - 0.05 if e_ < 7.9 else lx / 2)
+        n_, s_ = (n_ - 0.05 if n_ < 7.9 else lz / 2), (s_ - 0.05 if s_ < 7.9 else lz / 2)
+        x_, z_, lx, lz = x_ + (e_ - w_) / 2, z_ + (s_ - n_) / 2, w_ + e_, n_ + s_
+        print("  rose bed fitted to its corner:", round(lx, 2), "x", round(lz, 2), "m")
+    rose_beds.append([round(x_, 2), round(z_, 2), round(lx, 2), round(lz, 2), yaw_])
+
 meta = {
     "backdrop": {"half": BACK_HALF, "n": BACK_N}, "name_signs": name_signs,
     "x0": X0, "z0": Z0, "x1": X1, "z1": Z1, "cell": CELL, "gw": GW, "gh": GH,
@@ -3152,7 +3626,7 @@ meta = {
     "spawn": spawn, "places": places, "pois": pois, "streets": street_out, "fires": fires, "landmarks": landmarks, "plaza": plaza,
     "stadium": stadium, "piers": piers, "portals": portals,
     "quays": quays, "sports": sports, "canopies": canopies, "skywalks": skywalks, "fields": fields, "golf": golf, "courts": courts, "fountains": fountains, "door_signs": door_signs, "mercedes": list(overrides.MERCEDES_AT), "bicycle": list(overrides.BICYCLE_AT), "statues": statues, "sandpits": sandpits,
-    "plaza_tris": plaza_tris, "radhus_steps": radhus_steps, "rosepiken": list(overrides.ROSEPIKEN),
+    "plaza_tris": plaza_tris, "radhus_steps": radhus_steps, "rosepiken": list(overrides.ROSEPIKEN), "rose_beds": rose_beds, "sites": sites,
     "doors": {k: [list(d) for d in v] for k, v in overrides.DOORS.items()},
     "attribution": "Map data © OpenStreetMap contributors (ODbL). Terrain, building heights and roofs: © Kartverket, hoydedata.no.",
 }

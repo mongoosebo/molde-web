@@ -9,6 +9,7 @@ uniform sampler2D turf_tex : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D turf_nrm : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D stone_tex : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D stone_nrm : filter_linear_mipmap_anisotropic, repeat_enable;
+global uniform float wetness;            // 0 dry to 1 soaked (scripts/weather.gd)
 uniform vec2 world_origin;
 uniform vec2 world_size;
 
@@ -60,5 +61,8 @@ vec3 ground_colour(vec3 wpos, inout vec3 n, float h, float dist, out float rough
 		n = normalize(n + vec3(dn.x, 0.0, dn.y) * 0.55 * near);
 	}
 	rough = mix(0.95, 0.12, lake);
+	// rain: everything darker, and stone, gravel and asphalt shine
+	col *= 1.0 - 0.28 * wetness;
+	rough = mix(rough, min(rough, mix(0.8, 0.35, max(stony, road))), wetness);
 	return col;
 }

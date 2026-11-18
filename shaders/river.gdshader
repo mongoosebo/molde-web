@@ -6,10 +6,14 @@ render_mode blend_mix, depth_draw_opaque, cull_disabled;
 uniform sampler2D normal_tex : hint_normal, filter_linear_mipmap, repeat_enable;
 uniform sampler2D noise_tex : filter_linear_mipmap, repeat_enable;
 
+#include "water_common.gdshaderinc"
+
 varying float steep;
+varying vec3 wpos;
 
 void vertex() {
 	steep = COLOR.r;
+	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
 void fragment() {
@@ -23,7 +27,12 @@ void fragment() {
 	float fine = texture(noise_tex, vec2(UV.x * 2.9, (UV.y - TIME * speed * 1.6) * 0.9)).r;
 	float foam = smoothstep(0.60 - steep * 0.5, 0.78 - steep * 0.4, streak * 0.7 + fine * 0.3) * (0.30 + steep * 2.2);
 	float edge = smoothstep(0.0, 0.16, UV.x) * smoothstep(1.0, 0.84, UV.x);
-	foam = clamp(foam, 0.0, 1.0);
+	// what goes through the water near the player (the pattern is carried downstream by scripts/ripples.gd)
+	float crest, wake;
+	vec2 rip = ripple_at(wpos.xz, crest, wake);
+	foam = clamp(max(foam, smoothstep(0.08, 0.6, wake)), 0.0, 1.0);
+	vec3 n_world = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz + vec3(-rip.x, 0.0, -rip.y));
+	NORMAL = normalize((VIEW_MATRIX * vec4(n_world, 0.0)).xyz);
 	// the sky seen in the water at a low angle
 	float glance = pow(1.0 - clamp(dot(NORMAL, VIEW), 0.0, 1.0), 3.0);
 	vec3 water = mix(vec3(0.02, 0.07, 0.085), vec3(0.30, 0.36, 0.40), glance * 0.7);

@@ -45,11 +45,18 @@ var _near_root: Node3D
 var _near := {}               # cell -> Node3D (1 m terrain with collision)
 var _near_queue: Array = []
 var _near_want := Vector2i(-99999, -99999)
+var _mask_img: Image          # world/mask.png and mask2.png, kept to be asked about (cover_at)
+var _mask2_img: Image
+var _water_blocks := {}       # 100 m cell -> the block of world/waterlevel.bin for it (see water_at)
+const SEA_BED := 0.2          # ground lower than this is under the sea (the map builder puts land at 0.45 and up)
+const SEA_DRIFT := Vector2(0.04, 0.015)
+var near_at := Vector2i(-99999, -99999)   # the cell the 1 m ground is laid out around, as the far ground has stepped aside for
 var _street_names := PackedStringArray()
 var _street_grid := {}        # Vector2i (50 m cell) -> PackedFloat32Array [x, z, name index, ...]
 var _places: Array = []
 var _fire_lights: Array = []
 var _time := 0.0
+var ripples                   # scripts/ripples.gd: the water moving around whatever goes through it
 var detail                    # scripts/detail.gd: close-up buildings and roads around the player
 var props                     # scripts/props.gd: street furniture
 
@@ -63,6 +70,41 @@ class ChunkData:
 
 
 # ------------------------------------------------------------------ queries
+## The water at a place: {"level": height of its surface, "depth": how far the ground lies under it, "flow":
+## which way and how fast it runs (Vector2 east, south; metres a second)}. Empty where there is no water.
+## Lakes and running water come from world/waterlevel.bin (2 m squares); the sea is wherever the ground lies
+## under sea level, with its surface at 0 and a slow drift along the fjord.
+func water_at(x: float, z: float) -> Dictionary:
+	var ground := height_at(x, z)
+	if ground < SEA_BED:
+		return {"level": 0.0, "depth": -ground, "flow": SEA_DRIFT}
+	if not _water_blocks.is_empty():
+		var gx := int(floor(x / 2.0))
+		var gz := int(floor(z / 2.0))
+		var key := Vector2i(int(floor(gx / 50.0)), int(floor(gz / 50.0)))
+		var b = _water_blocks.get(key)
+		if b != null:
+			var at: int = (gz - key.y * 50) * 50 + (gx - key.x * 50)
+			var lv: int = (b as PackedByteArray).decode_s16(4 + at * 2)
+			if lv > -32000:
+				var level := lv * 0.01
+				if level > ground:
+					return {"level": level, "depth": level - ground,
+						"flow": Vector2((b as PackedByteArray).decode_s8(5004 + at), (b as PackedByteArray).decode_s8(7504 + at)) * 0.05}
+	return {}
+
+
+## What covers the ground at a place, each from 0 to 1: "road" (1 where the ground itself is the road: gravel, a
+## runway), "path" (a footpath), "trees" (under tree crowns), "mown" (lawns, parks, pitches), "field", "bog",
+## "rock" (bare rock and sand). From the same masks the ground is coloured by.
+func cover_at(x: float, z: float) -> Dictionary:
+	var u := clampf((x - x0) / (x1 - x0), 0.0, 0.9999)
+	var v := clampf((z - z0) / (z1 - z0), 0.0, 0.9999)
+	var a := _mask_img.get_pixel(int(u * _mask_img.get_width()), int(v * _mask_img.get_height()))
+	var b := _mask2_img.get_pixel(int(u * _mask2_img.get_width()), int(v * _mask2_img.get_height()))
+	return {"road": a.r, "path": a.g, "trees": a.b, "mown": b.r, "field": b.g, "bog": b.b, "rock": b.a}
+
+
 ## Height of the ground, from the 1 m terrain.
 func height_at(x: float, z: float) -> float:
 	x = clampf(x, x0, x1 - 0.01)
@@ -190,6 +232,12 @@ func build(hud) -> void:
 	_build_water()
 	_build_backdrop()
 	_build_rivers()
+	_load_water_grid()
+	ripples = Node.new()
+	ripples.name = "Ripples"
+	ripples.set_script(load("res://scripts/ripples.gd"))
+	add_child(ripples)
+	ripples.setup(self)
 	detail = Node3D.new()
 	detail.name = "Detail"
 	detail.set_script(load("res://scripts/detail.gd"))
@@ -205,7 +253,7 @@ func build(hud) -> void:
 	lm.build_all(self, meta)
 	hud.set_loading("Planting Moldemarka…")
 	await get_tree().process_frame
-	_build_trees()
+	await _build_trees()
 	props = Node3D.new()
 	props.name = "Props"
 	props.set_script(load("res://scripts/props.gd"))
@@ -263,6 +311,7 @@ func _build_terrain() -> void:
 	var htex := ImageTexture.create_from_image(himg)
 	var mimg := Image.new()
 	mimg.load_png_from_buffer(FileAccess.get_file_as_bytes(DIR + "mask.png"))
+	_mask_img = mimg.duplicate()
 	mimg.generate_mipmaps()
 	var mtex := ImageTexture.create_from_image(mimg)
 
@@ -282,6 +331,7 @@ func _build_terrain() -> void:
 	_near_mat.shader = load("res://shaders/terrain_near.gdshader")
 	var m2img := Image.new()
 	m2img.load_png_from_buffer(FileAccess.get_file_as_bytes(DIR + "mask2.png"))
+	_mask2_img = m2img.duplicate()
 	m2img.generate_mipmaps()
 	var m2tex := ImageTexture.create_from_image(m2img)
 	var detail_tex := {}
@@ -472,13 +522,25 @@ func _build_rivers() -> void:
 		var lmesh := ArrayMesh.new()
 		lmesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays2)
 		var lmat: ShaderMaterial = _water_mat.duplicate()
-		lmat.render_priority = 0
+		lmat.set_shader_parameter("calm", 1.0)
+		lmat.render_priority = -1
 		var li := MeshInstance3D.new()
 		li.name = "Lakes"
 		li.mesh = lmesh
 		li.material_override = lmat
 		li.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(li)
+
+
+## world/waterlevel.bin: where lakes and running water are, how high they stand and how they flow (water_at).
+func _load_water_grid() -> void:
+	if not FileAccess.file_exists(DIR + "waterlevel.bin"):
+		return
+	var data := FileAccess.get_file_as_bytes(DIR + "waterlevel.bin")
+	var n := data.decode_s32(0)
+	for i in n:
+		var at := 4 + i * 10004
+		_water_blocks[Vector2i(data.decode_s16(at), data.decode_s16(at + 2))] = data.slice(at, at + 10004)
 
 
 ## The mountains and coast far outside the map (world/backdrop.bin: a coarse grid of real heights).
@@ -524,6 +586,7 @@ func _build_water() -> void:
 	var mat := ShaderMaterial.new()
 	mat.shader = load("res://shaders/water.gdshader")
 	mat.set_shader_parameter("normal_tex", ntex)
+	mat.render_priority = -2                       # shallow water is seen through: drawn before glass and other see-through things
 	_water_mat = mat
 	_water_normal = ntex
 	var plane := PlaneMesh.new()
@@ -740,6 +803,59 @@ func _at(x: float, y: float, z: float) -> Transform3D:
 	return Transform3D(Basis(), Vector3(x, y, z))
 
 
+## A picture of each tree model from the side, for the far trees: [material, Vector2(width, height) in metres].
+## Each model is put alone in front of a camera in a small room of its own, lit like a plain day, and the
+## picture is kept. (The cards take the colour of the light they stand in when they are drawn.)
+func _tree_cards(meshes: Array) -> Array:
+	var out := []
+	var vp := SubViewport.new()
+	vp.size = Vector2i(128, 256)
+	vp.transparent_bg = true
+	vp.own_world_3d = true
+	vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	vp.msaa_3d = Viewport.MSAA_4X
+	add_child(vp)
+	var env := Environment.new()
+	env.background_mode = Environment.BG_COLOR
+	env.background_color = Color(0, 0, 0, 0)
+	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
+	env.ambient_light_color = Color(1, 1, 1)
+	env.ambient_light_energy = 1.0                    # (plain colour: the card is lit again where it stands)
+	env.tonemap_mode = Environment.TONE_MAPPER_LINEAR
+	var cam := Camera3D.new()
+	cam.projection = Camera3D.PROJECTION_ORTHOGONAL
+	cam.environment = env
+	vp.add_child(cam)
+	var sun := DirectionalLight3D.new()
+	sun.rotation_degrees = Vector3(-50, 30, 0)
+	sun.light_energy = 0.25                           # (a little shape to the crown)
+	vp.add_child(sun)
+	var mi := MeshInstance3D.new()
+	vp.add_child(mi)
+	for m in meshes:
+		var box: AABB = (m as Mesh).get_aabb()
+		var tall := box.position.y + box.size.y + 0.1
+		var wide := tall * 0.5
+		mi.mesh = m
+		cam.size = tall
+		cam.position = Vector3(0, tall * 0.5, 30.0)
+		cam.current = true
+		for i in 3:
+			await RenderingServer.frame_post_draw
+		var img := vp.get_texture().get_image()
+		img.generate_mipmaps()
+		var mat := ShaderMaterial.new()
+		mat.shader = load("res://shaders/tree_card.gdshader")
+		mat.set_shader_parameter("card", ImageTexture.create_from_image(img))
+		out.append([mat, Vector2(wide, tall)])
+	vp.queue_free()
+	return out
+
+
+## The trees (world/trees.bin: place, size, and whether a conifer or a broadleaf, as the laser saw them). Close
+## up each is a model: a spruce or a pine, a birch, a rowan or a rounder broadleaf (which of them is settled
+## by where the tree stands: pines on the high ground, birches everywhere). Beyond TREE_NEAR each is a picture
+## of its model on a card that turns to the camera, so the forest looks like forest from afar.
 func _build_trees() -> void:
 	var canopy := SphereMesh.new()
 	canopy.radius = 1.6
@@ -751,38 +867,65 @@ func _build_trees() -> void:
 	lobe.height = 2.3
 	lobe.radial_segments = 7
 	lobe.rings = 4
+	var small := SphereMesh.new()
+	small.radius = 0.8
+	small.height = 1.9
+	small.radial_segments = 6
+	small.rings = 3
+	var bark := Color(0.23, 0.17, 0.12)
 	var meshes := [
-		_merge([
-			[_cyl(0.13, 0.2, 2.0, 5), _at(0, 1.0, 0), Color(0.23, 0.17, 0.12)],
+		_merge([                                                        # 0 spruce
+			[_cyl(0.13, 0.2, 2.0, 5), _at(0, 1.0, 0), bark],
 			[_cyl(0.0, 1.9, 4.6, 7), _at(0, 3.4, 0), Color(0.12, 0.22, 0.14)],
 			[_cyl(0.0, 1.3, 3.8, 7), _at(0, 6.0, 0), Color(0.14, 0.25, 0.16)]]),
-		_merge([
+		_merge([                                                        # 1 a round broadleaf
 			[_cyl(0.10, 0.17, 4.6, 5), _at(0, 2.3, 0), Color(0.30, 0.24, 0.18)],
 			[canopy, _at(0, 5.4, 0), Color(0.20, 0.33, 0.13)],
 			[lobe, _at(1.0, 4.6, 0.4), Color(0.17, 0.29, 0.12)],
 			[lobe, _at(-0.8, 4.9, -0.7), Color(0.23, 0.36, 0.15)],
 			[lobe, _at(-0.2, 6.6, 0.6), Color(0.25, 0.38, 0.16)]]),
+		_merge([                                                        # 2 pine: a long bare trunk, the crown high up
+			[_cyl(0.10, 0.19, 5.6, 5), _at(0, 2.8, 0), Color(0.42, 0.24, 0.16)],
+			[lobe, _at(0, 6.4, 0), Color(0.13, 0.25, 0.16)],
+			[small, _at(0.9, 5.7, 0.3), Color(0.12, 0.23, 0.15)],
+			[small, _at(-0.7, 6.0, -0.6), Color(0.15, 0.27, 0.17)],
+			[small, _at(0.1, 7.5, 0.2), Color(0.16, 0.28, 0.17)]]),
+		_merge([                                                        # 3 birch: a white trunk, a light airy crown
+			[_cyl(0.07, 0.12, 5.2, 5), _at(0, 2.6, 0), Color(0.86, 0.86, 0.82)],
+			[lobe, _at(0, 5.6, 0), Color(0.36, 0.48, 0.20)],
+			[small, _at(0.7, 4.6, 0.3), Color(0.33, 0.45, 0.19)],
+			[small, _at(-0.6, 4.9, -0.5), Color(0.40, 0.52, 0.22)],
+			[small, _at(0.0, 6.9, 0.1), Color(0.42, 0.53, 0.23)]]),
+		_merge([                                                        # 4 rowan: small, with berries in autumn
+			[_cyl(0.06, 0.10, 2.6, 5), _at(0, 1.3, 0), Color(0.34, 0.30, 0.27)],
+			[lobe, _at(0, 3.4, 0), Color(0.26, 0.36, 0.14)],
+			[small, _at(0.6, 3.0, 0.4), Color(0.56, 0.20, 0.10)],
+			[small, _at(-0.6, 3.5, -0.3), Color(0.30, 0.38, 0.14)]]),
 	]
-	var ball := SphereMesh.new()
-	ball.radius = 1.6
-	ball.height = 3.8
-	ball.radial_segments = 5
-	ball.rings = 2
-	var far_meshes := [
-		_merge([[_cyl(0.0, 1.8, 6.9, 5), _at(0, 4.4, 0), Color(0.12, 0.22, 0.14)]]),
-		_merge([[ball, _at(0, 5.4, 0), Color(0.20, 0.33, 0.13)]]),
-	]
+	var cards := await _tree_cards(meshes)
+	var card_mesh := QuadMesh.new()
+	card_mesh.size = Vector2(1.0, 1.0)
+	card_mesh.center_offset = Vector3(0, 0.5, 0)
 	var data := FileAccess.get_file_as_bytes(DIR + "trees.bin").to_float32_array()
 	var groups := {}       # Vector3i(chunk x, chunk z, kind) -> PackedInt32Array of tree indices
 	var count := data.size() / 5
 	for i in count:
-		var key := Vector3i(int(floor(data[i * 5] / TREE_CHUNK)), int(floor(data[i * 5 + 1] / TREE_CHUNK)), int(data[i * 5 + 3]))
+		# which tree it is: the laser says conifer or broadleaf; the kind within that goes by the place
+		var pick := fposmod(sin(data[i * 5] * 12.9898 + data[i * 5 + 1] * 78.233) * 43758.5453, 1.0)
+		var kind := int(data[i * 5 + 3])
+		if kind == 0:
+			kind = 2 if pick < 0.12 + clampf((data[i * 5 + 4] - 80.0) / 500.0, 0.0, 0.45) else 0
+		else:
+			kind = 3 if pick < 0.45 else (4 if pick < 0.58 else 1)
+		var key := Vector3i(int(floor(data[i * 5] / TREE_CHUNK)), int(floor(data[i * 5 + 1] / TREE_CHUNK)), kind)
 		if not groups.has(key):
 			groups[key] = PackedInt32Array()
 		groups[key].append(i)
 	var root := Node3D.new()
 	root.name = "Trees"
 	add_child(root)
+	var sway := ShaderMaterial.new()                   # trees move in the wind (shaders/tree.gdshader)
+	sway.shader = load("res://shaders/tree.gdshader")
 	for key in groups:
 		var ids: PackedInt32Array = groups[key]
 		var mm := MultiMesh.new()
@@ -801,18 +944,25 @@ func _build_trees() -> void:
 		var mmi := MultiMeshInstance3D.new()
 		mmi.multimesh = mm
 		mmi.position = origin
+		mmi.material_override = sway
 		mmi.visibility_range_end = TREE_NEAR
 		mmi.visibility_range_end_margin = 30.0
 		root.add_child(mmi)
-		# the same trees again as plain shapes, for the far view
+		# the same trees again as pictures on cards, for the far view
 		var fm := MultiMesh.new()
 		fm.transform_format = MultiMesh.TRANSFORM_3D
-		fm.mesh = far_meshes[key.z]
+		fm.mesh = card_mesh
 		fm.instance_count = ids.size()
-		fm.buffer = mm.buffer
+		for j in ids.size():
+			var i2 := ids[j]
+			var s2 := data[i2 * 5 + 2]
+			var sz: Vector2 = cards[key.z][1] * s2
+			fm.set_instance_transform(j, Transform3D(Basis.from_scale(Vector3(sz.x, sz.y * (0.9 + 0.2 * sin(data[i2 * 5] * 3.1)), sz.x)),
+				Vector3(data[i2 * 5], data[i2 * 5 + 4] - 0.15, data[i2 * 5 + 1]) - origin))
 		var fmi := MultiMeshInstance3D.new()
 		fmi.multimesh = fm
 		fmi.position = origin
+		fmi.material_override = cards[key.z][0]
 		fmi.visibility_range_begin = TREE_NEAR
 		fmi.visibility_range_begin_margin = 30.0
 		fmi.visibility_range_end = TREE_RANGE
@@ -1051,6 +1201,8 @@ func update_streaming(p: Vector3) -> void:
 
 func _publish_near() -> void:
 	var c := _near_want
+	near_at = c
+	detail.ground_moved()
 	_terrain_mat.set_shader_parameter("near_rect", Vector4((c.x - TR) * FCELL + 0.5, (c.y - TR) * FCELL + 0.5,
 		(c.x + TR + 1) * FCELL - 0.5, (c.y + TR + 1) * FCELL - 0.5))
 	for k in _near.keys():

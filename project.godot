@@ -20,6 +20,44 @@ common/physics_interpolation=true
 
 [rendering]
 
+anti_aliasing/quality/msaa_3d=2
 renderer/rendering_method.web="gl_compatibility"
 
-anti_aliasing/quality/msaa_3d=2
+[shader_globals]
+
+ripple_tex={
+"type": "sampler2D",
+"value": ""
+}
+ripple_origin={
+"type": "vec2",
+"value": Vector2(0, 0)
+}
+ripple_size={
+"type": "float",
+"value": 64.0
+}
+ripple_on={
+"type": "float",
+"value": 0.0
+}
+night={
+"type": "float",
+"value": 0.0
+}
+lit_share={
+"type": "float",
+"value": 0.015
+}
+wetness={
+"type": "float",
+"value": 0.0
+}
+wind={
+"type": "vec3",
+"value": Vector3(0.94, 0.34, 0.3)
+}
+cloud_down={
+"type": "float",
+"value": 0.0
+}

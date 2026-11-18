@@ -322,7 +322,10 @@ func _build_cowling(g) -> void:
 		g.box("black", Vector3(0.40 * sx, 2.56, 0.55), Vector3(0.012, 0.09, 0.22), Basis(Vector3.BACK, -0.5 * sx))
 		for k in 5:
 			g.box("steel", Vector3(0.405 * sx, 2.50 + 0.03 * float(k), 0.55), Vector3(0.014, 0.004, 0.21), Basis(Vector3.BACK, -0.5 * sx))
-	g.lathe("dark", Vector3(0, 2.74, 1.55), Vector3(0, 0.80, 0.60).normalized(), [Vector2(0.0, -0.05), Vector2(0.105, -0.05), Vector2(0.115, 0.0), Vector2(0.115, 0.26),
+	# (the stack stands on the cowling itself: its foot is sunk into the hump where the hump is at that place)
+	var st := (1.55 + 0.75) / 3.40
+	var stack_y := _at(TOP, 1.55) - 0.05 + (0.06 + 0.44 * pow(sin(st * PI), 0.55) * (1.0 - 0.25 * st))
+	g.lathe("dark", Vector3(0, stack_y - 0.04, 1.55), Vector3(0, 0.80, 0.60).normalized(), [Vector2(0.0, -0.05), Vector2(0.105, -0.05), Vector2(0.115, 0.0), Vector2(0.115, 0.26),
 		Vector2(0.098, 0.26), Vector2(0.098, 0.02), Vector2(0.0, 0.02)], 20)
 	g.box("black", Vector3(0, 2.66, 2.20), Vector3(0.16, 0.012, 0.16), Basis(Vector3.RIGHT, 0.25))
 	# the fairing where the mast comes out
@@ -364,7 +367,7 @@ func _build_skids(g) -> void:
 
 
 func _build_inside(g) -> void:
-	g.box("floor", Vector3(0, 0.70, -0.45), Vector3(0.86, 0.02, 1.35))
+	g.box("floor", Vector3(0, 0.76, -0.30), Vector3(0.60, 0.02, 1.05))                       # (inside the rounded belly: it used to stand out through it as a grey slab)
 	g.box("floor", Vector3(0, 1.45, 0.86), Vector3(0.88, 0.75, 0.02))                        # the bulkhead behind the rear seats
 	for row in [[-0.78, 0.38], [0.30, 0.45]]:
 		for sgn in [-1.0, 1.0]:

@@ -5,6 +5,7 @@ Vegbilder covers the European, national and county roads: every few metres a 360
 roof, with where it was taken and which way the car was heading. Run as
 
     python3 vegbilder.py Storgata [year]
+    python3 vegbilder.py --ref 662 538 6226 [--year 2025]     (every road with one of these numbers; --ref all for every numbered road)
 
 to list the photos within 30 m of the ways with that name into data/vegbilder/images.json (added to what is
 there). tools/colours.py reads wall colours off them. The photos themselves are kept, at half size, in
@@ -58,15 +59,32 @@ def listing(x0, z0, x1, z1, year):
     return rows
 
 
-def along(name, year):
+def numbered(refs):
+    """The lines of the ways whose road number is one of `refs` (or any number, for "all"), in the game's frame."""
+    out = []
+    for e in json.load(open(os.path.join(ROOT, "data", "osm_raw.json")))["elements"]:
+        t = e.get("tags", {})
+        ref = t.get("ref", "").replace("E ", "E")
+        if e["type"] == "way" and "highway" in t and ref and e.get("geometry") and ("all" in refs or ref in refs):
+            out.append([((p["lon"] - LON0) * MX, (LAT0 - p["lat"]) * MZ) for p in e["geometry"]])
+    return out
+
+
+def along(name, year, lines=None):
     from shapely.geometry import LineString, Point
     from shapely.ops import unary_union
-    lines = street(name)
+    lines = street(name) if lines is None else lines
     if not lines:
         return []
     line = unary_union([LineString(l) for l in lines if len(l) >= 2])
     x0, z0, x1, z1 = line.bounds
-    return [r for r in listing(x0 - 60, z0 - 60, x1 + 60, z1 + 60, year) if line.distance(Point(r["x"], r["z"])) < 30.0]
+    rows = []
+    x = x0 - 60
+    while x < x1 + 60:                                    # (asked for in strips, so that no answer is cut short)
+        part = listing(x, z0 - 60, min(x + 1500, x1 + 60), z1 + 60, year)
+        rows += [r for r in part if line.distance(Point(r["x"], r["z"])) < 30.0]
+        x += 1500
+    return rows
 
 
 def fetch(row):
@@ -89,9 +107,15 @@ def fetch(row):
 
 
 if __name__ == "__main__":
-    name = sys.argv[1]
-    year = int(sys.argv[2]) if len(sys.argv) > 2 else 2025
-    rows = along(name, year)
+    if sys.argv[1] == "--ref":
+        refs = [a for a in sys.argv[2:] if not a.startswith("--") and not (a.isdigit() and len(a) == 4 and a.startswith("20") and sys.argv[sys.argv.index(a) - 1] == "--year")]
+        year = int(sys.argv[sys.argv.index("--year") + 1]) if "--year" in sys.argv else 2025
+        name = "roads " + " ".join(refs)
+        rows = along(name, year, numbered(set(refs)))
+    else:
+        name = sys.argv[1]
+        year = int(sys.argv[2]) if len(sys.argv) > 2 else 2025
+        rows = along(name, year)
     os.makedirs(DIR, exist_ok=True)
     path = os.path.join(DIR, "images.json")
     seen = {r["id"]: r for r in (json.load(open(path)) if os.path.exists(path) else [])}

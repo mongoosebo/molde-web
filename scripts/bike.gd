@@ -42,6 +42,9 @@ var _roll_v := 0.0
 var _preload := 0.0
 var _pedalling := false
 var _parked := true
+var _stand: Node3D                # the kickstand
+var _stand_up := 0.0             # 0 down, 1 folded back
+const STAND_DOWN := Vector3(-0.13, -0.305, 0.08)
 var _last_yaw := 0.0
 var _fresh := true
 
@@ -86,7 +89,7 @@ func _ready() -> void:
 	g.lathe("steel", rear_axle + Vector3(0.048, 0, 0), Vector3.RIGHT, [Vector2(0.02, 0.0), Vector2(0.055, 0.0), Vector2(0.048, 0.008), Vector2(0.04, 0.008), Vector2(0.034, 0.016), Vector2(0.02, 0.016)], 20)
 	g.box("black", rear_axle + Vector3(0.075, -0.09, 0.02), Vector3(0.008, 0.06, 0.018), Basis(Vector3.RIGHT, 0.3))
 	g.cyl("black", rear_axle + Vector3(0.075, -0.145, 0.035), Vector3.RIGHT, 0.022, 0.004, 10)
-	g.tube("steel", [rear_axle + Vector3(-0.07, -0.02, -0.10), Vector3(-0.20, 0.02, AXLE_R - 0.02)], 0.007, 6)     # the stand, folded down
+	# (the stand is a part of its own: down when the bicycle is parked, folded back along the chain stay when it is ridden)
 	# the chain: along the top and the bottom from the chainring to the sprocket
 	for q in [[0.085, 0.0], [-0.085, -0.02]]:
 		g.tube("alloy", [BB + Vector3(0.05, q[0], 0.0), rear_axle + Vector3(0.05, 0.045 if float(q[0]) > 0.0 else -0.05 + float(q[1]), 0.0)], 0.005, 5)
@@ -94,6 +97,16 @@ func _ready() -> void:
 	body.mesh = g.commit(_mats)
 	_body_mesh = body.mesh
 	_chassis.add_child(body)
+
+	_stand = Node3D.new()
+	_stand.position = rear_axle + Vector3(-0.07, -0.02, -0.10)
+	_chassis.add_child(_stand)
+	var kg = Shapes.Geo.new()
+	kg.tube("steel", [Vector3.ZERO, STAND_DOWN], 0.007, 6)
+	kg.box("black", STAND_DOWN, Vector3(0.012, 0.006, 0.02))
+	var kmi := MeshInstance3D.new()
+	kmi.mesh = kg.commit(_mats)
+	_stand.add_child(kmi)
 
 	# cranks and pedals, turning about the bottom bracket
 	_crank = Node3D.new()
@@ -125,13 +138,7 @@ func _ready() -> void:
 	# the rear wheel
 	var wg = Shapes.Geo.new()
 	_build_wheel(wg)
-	var wheel_mats := {}                                # a tyre is a shell: both sides of it are drawn, so it is never seen through
-	for key in _mats:
-		wheel_mats[key] = _mats[key]
-		if _mats[key] is StandardMaterial3D:
-			wheel_mats[key] = _mats[key].duplicate()
-			wheel_mats[key].cull_mode = BaseMaterial3D.CULL_DISABLED
-	var wheel_mesh: ArrayMesh = wg.commit(wheel_mats)
+	var wheel_mesh: ArrayMesh = wg.commit(_mats)
 	_rear = Node3D.new()
 	_rear.position = rear_axle
 	_chassis.add_child(_rear)
@@ -179,16 +186,15 @@ func _ready() -> void:
 	_place()
 
 
-## A wheel in the plane across the X axis: a knobbly tyre, a rim, a hub and thirty-two spokes, a disc brake.
+## A wheel in the plane across the X axis: a smooth tyre, a rim, a hub and thirty-two spokes, a disc brake.
+## The tyre and the rim are each a closed ring, as on the Volvo; only the space between the spokes is open.
 func _build_wheel(g) -> void:
 	g.lathe("rubber", Vector3.ZERO, Vector3.RIGHT, [Vector2(0.300, -0.018), Vector2(0.312, -0.026), Vector2(0.330, -0.027), Vector2(0.341, -0.018), Vector2(WHEEL_R, -0.006),
-		Vector2(WHEEL_R, 0.006), Vector2(0.341, 0.018), Vector2(0.330, 0.027), Vector2(0.312, 0.026), Vector2(0.300, 0.018)], 40)
-	for k in 40:                                                    # knobs
-		var a := TAU * float(k) / 40.0
-		for sgn in [-1.0, 1.0]:
-			var sx: float = sgn
-			g.box("rubber", Vector3(0.012 * sx + (0.006 if k % 2 == 0 else -0.006), sin(a) * (WHEEL_R + 0.002), cos(a) * (WHEEL_R + 0.002)), Vector3(0.006, 0.004, 0.009), Basis(Vector3.RIGHT, -a))
-	g.lathe("alloy", Vector3.ZERO, Vector3.RIGHT, [Vector2(0.302, -0.014), Vector2(0.300, -0.016), Vector2(0.285, -0.012), Vector2(0.280, 0.0), Vector2(0.285, 0.012), Vector2(0.300, 0.016), Vector2(0.302, 0.014)], 36)
+		Vector2(WHEEL_R, 0.006), Vector2(0.341, 0.018), Vector2(0.330, 0.027), Vector2(0.312, 0.026), Vector2(0.300, 0.018),
+		Vector2(0.296, 0.011), Vector2(0.296, -0.011), Vector2(0.300, -0.018)], 40)                   # and back inside the rim: a closed ring
+	# the rim, a closed ring too: its sides, the well toward the hub, and the bed under the tyre
+	g.lathe("alloy", Vector3.ZERO, Vector3.RIGHT, [Vector2(0.285, 0.012), Vector2(0.280, 0.0), Vector2(0.285, -0.012), Vector2(0.300, -0.016), Vector2(0.304, -0.014),
+		Vector2(0.304, 0.014), Vector2(0.300, 0.016), Vector2(0.285, 0.012)], 40)
 	g.lathe("steel", Vector3.ZERO, Vector3.RIGHT, [Vector2(0.0, -0.05), Vector2(0.012, -0.05), Vector2(0.024, -0.04), Vector2(0.018, -0.02), Vector2(0.018, 0.02), Vector2(0.024, 0.04), Vector2(0.012, 0.05), Vector2(0.0, 0.05)], 14)
 	for k in 32:
 		var a2 := TAU * float(k) / 32.0
@@ -310,6 +316,9 @@ func _place() -> void:
 	_steer_node.transform = Transform3D(Basis(axis, _steer), HEAD_LOW)
 	_front.rotation.x = _spin
 	_rear.rotation.x = _spin
+	_stand_up = move_toward(_stand_up, 0.0 if _parked else 1.0, 0.12)
+	var folded := Quaternion(STAND_DOWN.normalized(), Vector3(-0.02, -0.05, 1.0).normalized())
+	_stand.basis = Basis(Quaternion.IDENTITY.slerp(folded, _stand_up))
 	_crank.rotation.x = _crank_a
 	for i in 2:
 		_pedals[i].position = _pedal_at(1.0 if i == 1 else -1.0)

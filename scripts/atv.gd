@@ -47,7 +47,7 @@ func _ready() -> void:
 		"red": _mat(Color(0.62, 0.09, 0.07), 0.45), "black": _mat(Color(0.06, 0.06, 0.065), 0.7), "grey": _mat(Color(0.32, 0.33, 0.35), 0.5),
 		"steel": _mat(Color(0.55, 0.56, 0.58), 0.35), "rubber": _mat(Color(0.04, 0.04, 0.04), 1.0), "seat": _mat(Color(0.08, 0.08, 0.085), 0.95),
 		"lamp": _mat(Color(0.95, 0.93, 0.80), 0.3), "tail": _mat(Color(0.7, 0.05, 0.04), 0.4), "alloy": _mat(Color(0.70, 0.71, 0.73), 0.3),
-		"spring": _mat(Color(0.85, 0.65, 0.08), 0.5),
+		"spring": _mat(Color(0.85, 0.65, 0.08), 0.5), "under": _mat(Color(0.03, 0.03, 0.03), 1.0),
 	}
 	for key in ["steel", "alloy"]:
 		_mats[key].metallic = 0.8
@@ -89,13 +89,7 @@ func _ready() -> void:
 	# wheels: fat low-pressure tyres with lugs, on dished rims; each hangs on an arm and a coil-sprung shock
 	var w = Shapes.Geo.new()
 	_build_wheel(w)
-	var wheel_mats := {}                                # a tyre is a shell: both sides of it are drawn, so it is never seen through
-	for key in _mats:
-		wheel_mats[key] = _mats[key]
-		if _mats[key] is StandardMaterial3D:
-			wheel_mats[key] = _mats[key].duplicate()
-			wheel_mats[key].cull_mode = BaseMaterial3D.CULL_DISABLED
-	var wheel_mesh: ArrayMesh = w.commit(wheel_mats)
+	var wheel_mesh: ArrayMesh = w.commit(_mats)
 	var arm_g = Shapes.Geo.new()
 	arm_g.tube("black", [Vector3(0, -0.5, -0.05), Vector3(0, 0.5, -0.10)], 0.016, 8)
 	arm_g.tube("black", [Vector3(0, -0.5, 0.05), Vector3(0, 0.5, 0.10)], 0.016, 8)
@@ -174,8 +168,8 @@ func _build_frame(g) -> void:
 	for k in 7:
 		g.box("grey", Vector3(0, 0.60, -0.08) + lean.y * (-0.085 + 0.028 * float(k)), Vector3(0.105, 0.004, 0.105), lean)
 	g.box("black", Vector3(0, 0.62, 0.33), Vector3(0.11, 0.07, 0.12))
-	g.tube("steel", [Vector3(0.05, 0.63, -0.17), Vector3(0.16, 0.56, -0.24), Vector3(0.24, 0.46, -0.10), Vector3(0.26, 0.45, 0.30), Vector3(0.27, 0.56, 0.62), Vector3(0.27, 0.60, 0.74)], 0.022, 10)
-	g.lathe("steel", Vector3(0.27, 0.61, 0.74), Vector3(0, 0.12, 0.99).normalized(), [Vector2(0.0, -0.01), Vector2(0.045, -0.01), Vector2(0.058, 0.02), Vector2(0.058, 0.30), Vector2(0.045, 0.33),
+	g.tube("steel", [Vector3(0.05, 0.63, -0.17), Vector3(0.16, 0.56, -0.24), Vector3(0.20, 0.45, -0.10), Vector3(0.17, 0.43, 0.26), Vector3(0.06, 0.47, 0.50), Vector3(0.0, 0.50, 0.62), Vector3(0.0, 0.52, 0.74)], 0.022, 10)
+	g.lathe("steel", Vector3(0.0, 0.525, 0.74), Vector3(0, 0.10, 0.99).normalized(), [Vector2(0.0, -0.01), Vector2(0.045, -0.01), Vector2(0.058, 0.02), Vector2(0.058, 0.30), Vector2(0.045, 0.33),
 		Vector2(0.02, 0.335), Vector2(0.02, 0.37), Vector2(0.012, 0.37), Vector2(0.012, 0.33), Vector2(0.0, 0.33)], 16)
 	# drive shafts to the rear wheels
 	g.tube("steel", [Vector3(-0.40, 0.31, 0.62), Vector3(0.40, 0.31, 0.62)], 0.018, 8)
@@ -191,9 +185,9 @@ func _build_plastics(g) -> void:
 			var rows := []
 			for i in 17:
 				# an arc over the wheel, from in front of it to behind it; wider and lower toward the outside
-				var a := deg_to_rad(lerpf(-78.0, 78.0, float(i) / 16.0)) * (1.0 if front else -1.0)
+				var a := deg_to_rad(lerpf(-56.0, 56.0, float(i) / 16.0)) * (1.0 if front else -1.0)
 				var row := PackedVector3Array()
-				for q in [[0.16, 0.50, 0.0], [0.28, 0.50, 0.0], [0.42, 0.495, 0.0], [0.56, 0.47, 0.0], [0.64, 0.42, 0.01], [0.655, 0.37, 0.03]]:
+				for q in [[0.19, 0.47, 0.0], [0.28, 0.47, 0.0], [0.40, 0.468, 0.0], [0.51, 0.455, 0.0], [0.58, 0.425, 0.005], [0.60, 0.39, 0.015]]:
 					var r: float = q[1]
 					row.append(Vector3(float(q[0]) * sx, 0.30 + cos(a) * r - 0.02, zc - sin(a) * (r + float(q[2]))))
 				rows.append(row)
@@ -247,11 +241,14 @@ func _build_plastics(g) -> void:
 
 
 ## A wheel, turning about the Y axis of its own frame: a fat tyre with rows of lugs, a dished rim, hub and nuts.
+## Built like the Volvo's: the tyre is a closed ring (round the tread and back under the rim), the rim is a closed
+## ring of its own, and a disc closes each face behind the dish. Nothing is open, so nothing shows through.
 func _build_wheel(g) -> void:
 	var segs := 40
-	g.lathe("rubber", Vector3.ZERO, Vector3.UP, [Vector2(0.150, -0.105), Vector2(0.165, -0.122), Vector2(0.195, -0.131), Vector2(0.230, -0.133), Vector2(0.262, -0.122),
+	g.lathe("rubber", Vector3.ZERO, Vector3.UP, [Vector2(0.154, -0.104), Vector2(0.167, -0.122), Vector2(0.195, -0.131), Vector2(0.230, -0.133), Vector2(0.262, -0.122),
 		Vector2(0.284, -0.100), Vector2(0.295, -0.065), Vector2(0.298, -0.022), Vector2(0.298, 0.022), Vector2(0.295, 0.065), Vector2(0.284, 0.100), Vector2(0.262, 0.122),
-		Vector2(0.230, 0.133), Vector2(0.195, 0.131), Vector2(0.165, 0.122), Vector2(0.150, 0.105)], segs)
+		Vector2(0.230, 0.133), Vector2(0.195, 0.131), Vector2(0.167, 0.122), Vector2(0.154, 0.104),
+		Vector2(0.146, 0.092), Vector2(0.146, -0.092), Vector2(0.154, -0.104)], segs)                  # and back under the rim: closed
 	for k in 24:                                                    # lugs: slanted bars in two rows, staggered
 		for sgn in [-1.0, 1.0]:
 			var sy: float = sgn
@@ -261,11 +258,14 @@ func _build_wheel(g) -> void:
 			var bs := Basis(along, Vector3.UP, out) * Basis(Vector3.BACK, 0.5 * sy)
 			g.box("rubber", out * 0.296 + Vector3(0, 0.055 * sy, 0), Vector3(0.018, 0.05, 0.012), bs)
 			g.box("rubber", out.rotated(Vector3.UP, 0.06) * 0.280 + Vector3(0, 0.112 * sy, 0), Vector3(0.016, 0.022, 0.012), Basis(along, Vector3.UP, out) * Basis(Vector3.RIGHT, -0.7 * sy))
-	g.lathe("alloy", Vector3.ZERO, Vector3.UP, [Vector2(0.148, -0.108), Vector2(0.158, -0.100), Vector2(0.150, -0.085), Vector2(0.135, -0.075), Vector2(0.128, 0.0),
-		Vector2(0.135, 0.075), Vector2(0.150, 0.085), Vector2(0.158, 0.100), Vector2(0.148, 0.108)], 32)
+	# the rim, a closed ring: the inside of the barrel, a lip on each face, and the outside under the tyre
+	g.lathe("alloy", Vector3.ZERO, Vector3.UP, [Vector2(0.128, 0.075), Vector2(0.124, 0.0), Vector2(0.128, -0.075), Vector2(0.140, -0.100), Vector2(0.150, -0.110),
+		Vector2(0.160, -0.109), Vector2(0.163, -0.101), Vector2(0.152, -0.088), Vector2(0.140, -0.070), Vector2(0.134, 0.0), Vector2(0.140, 0.070), Vector2(0.152, 0.088),
+		Vector2(0.163, 0.101), Vector2(0.160, 0.109), Vector2(0.150, 0.110), Vector2(0.140, 0.100), Vector2(0.128, 0.075)], 32)
 	for face in [-1.0, 1.0]:
 		var fy: float = face
-		g.lathe("alloy", Vector3(0, 0.07 * fy, 0), Vector3(0, fy, 0), [Vector2(0.132, 0.0), Vector2(0.10, -0.022), Vector2(0.055, -0.030), Vector2(0.045, -0.012), Vector2(0.0, -0.010)], 28)   # the dished face
+		g.cyl("under", Vector3(0, 0.032 * fy, 0), Vector3.UP, 0.130, 0.004, 32)                          # closed behind the dish
+		g.lathe("alloy", Vector3(0, 0.07 * fy, 0), Vector3(0, fy, 0), [Vector2(0.132, 0.0), Vector2(0.10, -0.022), Vector2(0.055, -0.030), Vector2(0.045, -0.012), Vector2(0.0, -0.010)], 28, true)   # the dished face
 		g.cyl("grey", Vector3(0, 0.062 * fy, 0), Vector3.UP, 0.035, 0.008, 14)
 		for k in 4:
 			var a2 := TAU * float(k) / 4.0 + 0.4

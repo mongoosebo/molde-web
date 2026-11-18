@@ -1,0 +1,77 @@
+# Holes in the paving, looked for automatically. (To switch on: move this file to .github/workflows/holes.yml.)
+#
+# On every push that changes the map, the tools or the paving code: tools/holes.py checks all paving exactly
+# (Python only, a minute). The totals go in the run's summary, data/holes.png is attached, and the run fails
+# when there are holes: a map change that makes new ones shows up with a red cross.
+#
+# Once a night, and when started by hand: also the street-level sweep in Godot (./run.sh -- --sweep-street),
+# rendered without a graphics card, at every eighth place; the pictures with something in them are attached.
+name: Holes in the paving
+
+on:
+  push:
+    paths:
+      - "world/**"
+      - "tools/**"
+      - "scripts/detail.gd"
+      - ".github/workflows/holes.yml"
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+env:
+  GODOT: 4.7.2
+
+jobs:
+  exact:
+    name: Exact check (tools/holes.py)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet numpy pillow
+      - name: Check every square metre of paving
+        run: python tools/holes.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: holes
+          path: |
+            data/holes.png
+            data/holes.json
+
+  street:
+    name: Street-level sweep in Godot
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet numpy pillow scipy shapely
+      - name: Get Godot and what it needs to draw without a graphics card
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb libgl1-mesa-dri mesa-utils >/dev/null
+          base=https://github.com/godotengine/godot/releases/download/${GODOT}-stable
+          curl -fsSL -o godot.zip "$base/Godot_v${GODOT}-stable_linux.x86_64.zip"
+          unzip -q godot.zip -d "$HOME/godot"
+          mv "$HOME/godot/Godot_v${GODOT}-stable_linux.x86_64" "$HOME/godot/godot"
+      - name: Look around from the street
+        run: |
+          "$HOME/godot/godot" --headless --path . --import || true
+          xvfb-run -a -s "-screen 0 1280x720x24" "$HOME/godot/godot" --rendering-driver opengl3 --path . -- --sweep-street --every=8 2>&1 | grep -E "SWEEP|SCRIPT ERROR" || true
+          test -f data/sweep_street/index.json
+      - name: Read the pictures
+        run: python tools/sweep.py --street
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: street-sweep
+          path: |
+            data/sweep_street/found/
+            data/sweep_street.json

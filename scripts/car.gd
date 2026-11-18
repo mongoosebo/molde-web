@@ -49,6 +49,8 @@ var SQUEEZE_LEN := 0.24                       # and over what length they narrow
 var END_FINE := 0.06                          # the length at each end where the outline is taken more closely
 var SQUEEZE_TAIL := -1.0                      # the same for the tail alone, if it differs from the nose (negative: it does not)
 var FOX_TAIL := true
+var SKIN_STEP := 0.016                        # how far apart the outlines of the body are taken (the traffic's cars: further)
+var WHEEL_SEGS := 56                          # how many sides the round of a wheel has
 const TAIL_POINTS := 7
 const TAIL_LINK := 0.085
 
@@ -491,13 +493,24 @@ class Geo:
 		quad(m, c - x - y + z, c + x - y + z, c + x + y + z, c - x + y + z, bs.z)
 		quad(m, c - x - y - z, c + x - y - z, c + x + y - z, c - x + y - z, -bs.z)
 
-	## A surface of revolution: `profile` is a list of Vector2(radius, distance along the axis).
-	func lathe(m: String, c: Vector3, axis: Vector3, profile: Array, segs: int) -> void:
+	## A surface of revolution: `profile` is a list of Vector2(radius, distance along the axis). The profile is
+	## taken as the outline of a solid: its faces look away from the area the profile encloses (with a straight
+	## line from its last point back to its first), whichever way the points run. `hollow` turns that round, for a
+	## dish or a bowl that is seen from its hollow side. A profile that encloses nothing (a straight line) faces
+	## away from the axis, or along it when it is a flat disc.
+	func lathe(m: String, c: Vector3, axis: Vector3, profile: Array, segs: int, hollow := false) -> void:
 		var u := axis.cross(Vector3.RIGHT)
 		if u.length_squared() < 0.01:
 			u = axis.cross(Vector3.UP)
 		u = u.normalized()
 		var v := axis.cross(u)
+		var area := 0.0
+		for i in profile.size():
+			var p0: Vector2 = profile[i]
+			var q0: Vector2 = profile[(i + 1) % profile.size()]
+			area += p0.x * q0.y - q0.x * p0.y
+		var plain := absf(area) < 1e-9
+		var side := (1.0 if area > 0.0 else -1.0) * (-1.0 if hollow else 1.0)
 		for k in segs:
 			var a0 := TAU * float(k) / float(segs)
 			var a1 := TAU * float(k + 1) / float(segs)
@@ -506,11 +519,14 @@ class Geo:
 			for i in profile.size() - 1:
 				var p: Vector2 = profile[i]
 				var q: Vector2 = profile[i + 1]
-				var out := (d0 + d1) * (q.y - p.y) - axis * (q.x - p.x) * 2.0       # away from the axis, or along it on a flat face
-				if (q.y - p.y) < 0.0:
-					out = -out
-				if absf(q.y - p.y) < 1e-6:
-					out = axis * (1.0 if profile[0].y > 0.0 or p.y > 0.0 else -1.0)
+				var out := (d0 + d1) * (q.y - p.y) - axis * (q.x - p.x) * 2.0       # to the right of the way the profile runs
+				if plain:
+					if (q.y - p.y) < 0.0:
+						out = -out
+					if absf(q.y - p.y) < 1e-6:
+						out = axis * (1.0 if profile[0].y > 0.0 or p.y > 0.0 else -1.0)
+				else:
+					out *= side
 				quad(m, c + d0 * p.x + axis * p.y, c + d1 * p.x + axis * p.y, c + d1 * q.x + axis * q.y, c + d0 * q.x + axis * q.y, out)
 
 	## A plain cylinder with end caps.
@@ -734,7 +750,7 @@ func _build_shell(g: Geo) -> void:
 	var zz := -HALF_LEN
 	while zz < HALF_LEN - 0.0005:
 		zs.append(zz)
-		zz += 0.004 if absf(zz + 0.002) > HALF_LEN - END_FINE else 0.016
+		zz += SKIN_STEP * 0.25 if absf(zz + 0.002) > HALF_LEN - END_FINE else SKIN_STEP
 	zs.append(HALF_LEN)
 	var n := zs.size() - 1
 	var prev := []
@@ -845,7 +861,7 @@ func _build_details(g: Geo) -> void:
 		g.box("amber", Vector3(0.835 * sx2, 0.745, -2.33), Vector3(0.012, 0.095, 0.05))
 		g.box("amber", Vector3(0.60 * sx2, 0.42, -2.50), Vector3(0.11, 0.022, 0.006))                  # in the bumper
 		g.box("lamp", Vector3(0.36 * sx2, 0.34, -2.345), Vector3(0.075, 0.035, 0.008))                 # fog lamps
-		g.box("amber", Vector3(0.878 * sx2, 0.66, -1.95), Vector3(0.004, 0.02, 0.035))                 # side repeaters
+		g.box("amber", Vector3(0.8755 * sx2, 0.66, -1.95), Vector3(0.0012, 0.018, 0.034))              # side repeaters: flat on the wing, like a marking (they stood out as blocks)
 		# tail lights: a tall cluster in sections, with ribs
 		g.box("black", Vector3(0.60 * sx2, 0.775, 2.366), Vector3(0.25, 0.135, 0.008))
 		var kinds := ["red", "red", "amber", "lamp"]
@@ -882,7 +898,7 @@ func _build_details(g: Geo) -> void:
 ## 17 inch alloy rim with five double spokes, the brake disc behind them, the hub and its five nuts.
 ## Both faces are made alike, so the same wheel serves on either side of the car.
 func _build_wheel(g: Geo) -> void:
-	var segs := 56
+	var segs := WHEEL_SEGS
 	var hw := 0.112
 	var wr := WHEEL_R
 	var mid_r := (RIM_R + wr) * 0.5 - 0.005

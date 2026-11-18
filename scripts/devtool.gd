@@ -37,6 +37,20 @@ var _pending := {}
 var _saved := 0
 var _toast_time := 0.0
 var _dir := ""
+# The patch tool (P): squares of asphalt, of paving, or of bare ground laid where the crosshair points. Each is
+# written to tools/patches.jsonl, which tools/build_map.py reads: the patch is real after the next build of the
+# map. Until then it is shown as a flat square of the colour it will be.
+const PATCH_KINDS := ["asphalt", "paving", "none"]
+const PATCH_NAMES := ["asphalt", "paving", "remove (bare ground)"]
+const PATCH_SIZES := [2.0, 4.0, 8.0, 16.0, 32.0]
+const PATCH_COLOURS := [Color(0.13, 0.13, 0.14), Color(0.55, 0.55, 0.54), Color(0.30, 0.42, 0.20)]
+var patching := false
+var _patch_kind := 0
+var _patch_size := 1
+var _patch_made: Array = []          # the squares laid this session: [line in the file, the node that shows it]
+var _patch_frame: MeshInstance3D
+var _patch_line: Label
+var _patch_path := ""
 
 
 class Cross extends Control:
@@ -56,6 +70,22 @@ func start(w, p) -> void:
 	DirAccess.make_dir_recursive_absolute(_dir + "/shots")
 	if FileAccess.file_exists(_dir + "/notes.jsonl"):
 		_saved = FileAccess.get_file_as_string(_dir + "/notes.jsonl").count("\n")
+
+	_patch_path = ProjectSettings.globalize_path("res://tools/patches.jsonl")
+	_patch_frame = MeshInstance3D.new()
+	_patch_frame.visible = false
+	_patch_frame.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_patch_frame.top_level = true
+	world.add_child(_patch_frame)
+	_patch_line = Label.new()
+	_patch_line.add_theme_font_size_override("font_size", 16)
+	_patch_line.add_theme_color_override("font_color", Color(1.0, 0.85, 0.1))
+	_patch_line.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	_patch_line.add_theme_constant_override("outline_size", 5)
+	_patch_line.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 60)
+	_patch_line.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_patch_line.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	add_child(_patch_line)
 
 	_cross = Cross.new()
 	_cross.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -154,10 +184,111 @@ func _grid_add(grid: Dictionary, x: float, z: float, i: int) -> void:
 
 
 func _show_count() -> void:
-	_count.text = "Right mouse button: leave a note on what the crosshair points at  ·  notes waiting: %d" % _saved
+	_count.text = "Right mouse button: leave a note on what the crosshair points at  ·  P: patch tool (asphalt, paving)  ·  notes waiting: %d" % _saved
+
+
+## Where the crosshair meets the ground, or null.
+func _patch_point():
+	var cam: Camera3D = get_viewport().get_camera_3d()
+	var centre := get_viewport().get_visible_rect().size * 0.5
+	var from := cam.project_ray_origin(centre)
+	var q := PhysicsRayQueryParameters3D.create(from, from + cam.project_ray_normal(centre) * 250.0)
+	var exclude: Array[RID] = [player.get_rid()]
+	q.exclude = exclude
+	var hit: Dictionary = player.get_world_3d().direct_space_state.intersect_ray(q)
+	return null if hit.is_empty() else hit["position"]
+
+
+## A flat square lying on the ground as the ground lies, a little over it: of one colour, or only its edge.
+func _patch_square(at: Vector3, size: float, yaw: float, col: Color, only_edge: bool) -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var n := clampi(int(size / 2.0), 2, 16)
+	var bs := Basis(Vector3.UP, yaw)
+	var pts := []
+	for j in n + 1:
+		var row := []
+		for i in n + 1:
+			var p: Vector3 = at + bs * Vector3((float(i) / float(n) - 0.5) * size, 0, (float(j) / float(n) - 0.5) * size)
+			var y: float = world.detail.surface_at(p.x, p.z)
+			p.y = (world.height_at(p.x, p.z) if is_nan(y) else y + 0.10) + (0.30 if only_edge else 0.27)
+			row.append(p - at)
+		pts.append(row)
+	if only_edge:
+		# a narrow band along each side, following the ground
+		var inward := 0.18 / (size / float(n))
+		for i in n:
+			for side in 4:
+				var a: Vector3 = [pts[0][i], pts[n][i], pts[i][0], pts[i][n]][side]
+				var b: Vector3 = [pts[0][i + 1], pts[n][i + 1], pts[i + 1][0], pts[i + 1][n]][side]
+				var a2: Vector3 = [pts[1][i], pts[n - 1][i], pts[i][1], pts[i][n - 1]][side]
+				var b2: Vector3 = [pts[1][i + 1], pts[n - 1][i + 1], pts[i + 1][1], pts[i + 1][n - 1]][side]
+				_quad(st, a, b, b.lerp(b2, inward), a.lerp(a2, inward))
+	else:
+		for j in n:
+			for i in n:
+				_quad(st, pts[j][i], pts[j][i + 1], pts[j + 1][i + 1], pts[j + 1][i])
+	st.generate_normals()
+	var mesh := st.commit()
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = col
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	if only_edge:
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mesh.surface_set_material(0, mat)
+	return mesh
+
+
+func _patch_text() -> void:
+	_patch_line.text = "" if not patching else "PATCH TOOL   1 asphalt · 2 paving · 3 remove   [%s]      4–8 size   [%d m]      left mouse: lay it · Z: undo · P: done      laid: %d (real after the next map build)" % [
+		PATCH_NAMES[_patch_kind], int(PATCH_SIZES[_patch_size]), _patch_made.size()]
+
+
+func _patch_lay() -> void:
+	var at = _patch_point()
+	if at == null:
+		return
+	var size: float = PATCH_SIZES[_patch_size]
+	var rec := {"kind": PATCH_KINDS[_patch_kind], "x": snappedf(at.x, 0.1), "z": snappedf(at.z, 0.1), "size": size, "yaw": snappedf(player.yaw, 0.01),
+		"time": Time.get_datetime_string_from_system()}
+	var line := JSON.stringify(rec)
+	var f := FileAccess.open(_patch_path, FileAccess.READ_WRITE if FileAccess.file_exists(_patch_path) else FileAccess.WRITE)
+	f.seek_end()
+	f.store_line(line)
+	f.close()
+	var mi := MeshInstance3D.new()
+	mi.mesh = _patch_square(at, size, player.yaw, PATCH_COLOURS[_patch_kind], false)
+	mi.position = at
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	world.add_child(mi)
+	_patch_made.append([line, mi])
+	_patch_text()
+
+
+func _patch_undo() -> void:
+	if _patch_made.is_empty():
+		return
+	var last: Array = _patch_made.pop_back()
+	(last[1] as Node).queue_free()
+	var lines := FileAccess.get_file_as_string(_patch_path).split("\n", false)
+	for i in range(lines.size() - 1, -1, -1):
+		if lines[i] == last[0]:
+			lines.remove_at(i)
+			break
+	var f := FileAccess.open(_patch_path, FileAccess.WRITE)
+	for l in lines:
+		f.store_line(l)
+	f.close()
+	_patch_text()
 
 
 func _process(delta: float) -> void:
+	if patching and world != null and not _panel.visible:
+		var at = _patch_point()
+		_patch_frame.visible = at != null
+		if at != null:
+			_patch_frame.mesh = _patch_square(at, PATCH_SIZES[_patch_size], player.yaw, Color(1.0, 0.85, 0.1), true)
+			_patch_frame.global_position = at
 	if _toast_time > 0.0:
 		_toast_time -= delta
 		if _toast_time <= 0.0:
@@ -175,6 +306,31 @@ func _input(event: InputEvent) -> void:
 			elif (event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER) and event.ctrl_pressed:
 				get_viewport().set_input_as_handled()
 				_close(true)
+		return
+	if event is InputEventKey and event.pressed and not event.echo and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		if event.keycode == KEY_P:
+			patching = not patching
+			_patch_frame.visible = false
+			_patch_text()
+			get_viewport().set_input_as_handled()
+			return
+		if patching:
+			var k: int = event.keycode
+			if k >= KEY_1 and k <= KEY_3:
+				_patch_kind = k - KEY_1
+			elif k >= KEY_4 and k <= KEY_8:
+				_patch_size = k - KEY_4
+			elif k == KEY_Z:
+				_patch_undo()
+			else:
+				k = -1
+			if k != -1:
+				_patch_text()
+				get_viewport().set_input_as_handled()
+				return
+	if patching and event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		get_viewport().set_input_as_handled()
+		_patch_lay()
 		return
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT \
 			and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:

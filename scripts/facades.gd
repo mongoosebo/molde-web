@@ -172,19 +172,24 @@ class Face:
 
 func _init() -> void:
 	mats = {
-		"clad": _textured("cladding", 2.0, 0.85),
-		"plaster": _textured("plaster", 2.0, 0.92),
+		"clad": _wall("cladding", 2.0, 0.85),
+		"plaster": _wall("plaster", 2.0, 0.92),
 		"roof": _textured("gravel", 1.5, 0.85),
-		"cladv": _textured("cladv", 2.0, 0.85),
-		"tiles": _mapped("rooftile", 2.0, 0.8, 0.0),
-		"sheet": _mapped("sheet", 2.0, 0.45, 0.35),
-		"asphalt": _textured("asphalt", 2.0, 0.9),
+		"cladv": _wall("cladv", 2.0, 0.85),
+		"tiles": _wall("rooftile", 2.0, 0.8, 0.0, true, 1.0),
+		"sheet": _wall("sheet", 2.0, 0.45, 0.35, true, 0.3),
+		"asphalt": _asphalt(),
+		"wear": _film(),
 		"sidewalk": _textured("slabs", 2.0, 0.9),
 		"path": _textured("path", 2.0, 0.95),
 		"metal": _plain(0.45, 0.35),
 		"trim": _plain(0.6, 0.0),
-		"mark": _plain(0.7, 0.0),
+		"mark": _paint(),
+		"iron": _plain(0.55, 0.6),
 		"glass": _plain(0.07, 0.85),
+		# windows with a light on inside: some through the evening, a few all night (scripts/daytime.gd turns them up)
+		"glass_eve": _lit_glass(),
+		"glass_late": _lit_glass(),
 	}
 
 
@@ -226,6 +231,78 @@ func _mapped(tex: String, tile_m: float, rough: float, metallic: float) -> Stand
 	m.vertex_color_is_srgb = true
 	m.uv1_scale = Vector3.ONE / tile_m
 	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
+	return m
+
+
+## A wall or roof material close up: photographed colour, normal and roughness, the building's own colour over
+## it, and a little age (shaders/wall.gdshader). `by_mesh` for roofs, which carry their own coordinates.
+func _wall(tex: String, tile_m: float, rough: float, metallic := 0.0, by_mesh := false, moss := 0.0) -> ShaderMaterial:
+	var m := ShaderMaterial.new()
+	m.shader = load("res://shaders/wall.gdshader")
+	m.set_shader_parameter("albedo_tex", _tex(tex + "_albedo"))
+	m.set_shader_parameter("normal_tex", _tex(tex + "_normal"))
+	m.set_shader_parameter("noise_tex", _wear_noise())
+	m.set_shader_parameter("tile", tile_m)
+	m.set_shader_parameter("rough", rough)
+	m.set_shader_parameter("metal", metallic)
+	m.set_shader_parameter("by_mesh", by_mesh)
+	m.set_shader_parameter("moss", moss)
+	if FileAccess.file_exists(TEX_DIR + tex + "_rough.png"):
+		m.set_shader_parameter("rough_tex", _tex(tex + "_rough"))
+		m.set_shader_parameter("has_rough", true)
+	return m
+
+
+## Asphalt that looks used (shaders/asphalt.gdshader).
+func _asphalt() -> ShaderMaterial:
+	var m := ShaderMaterial.new()
+	m.shader = load("res://shaders/asphalt.gdshader")
+	m.set_shader_parameter("albedo_tex", _tex("asphalt_albedo"))
+	m.set_shader_parameter("normal_tex", _tex("asphalt_normal"))
+	m.set_shader_parameter("noise_tex", _wear_noise())
+	return m
+
+
+## Road paint, a little worn (shaders/paint.gdshader).
+func _paint() -> ShaderMaterial:
+	var m := ShaderMaterial.new()
+	m.shader = load("res://shaders/paint.gdshader")
+	m.set_shader_parameter("noise_tex", _wear_noise())
+	return m
+
+
+## A thin dark film: where the tyres run in each lane.
+func _film() -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.vertex_color_use_as_albedo = true
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.roughness = 0.75
+	return m
+
+
+var _noise_for_wear: NoiseTexture2D
+
+
+func _wear_noise() -> NoiseTexture2D:
+	if _noise_for_wear == null:
+		var noise := FastNoiseLite.new()
+		noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+		noise.frequency = 0.012
+		noise.fractal_octaves = 4
+		_noise_for_wear = NoiseTexture2D.new()
+		_noise_for_wear.width = 512
+		_noise_for_wear.height = 512
+		_noise_for_wear.seamless = true
+		_noise_for_wear.generate_mipmaps = true
+		_noise_for_wear.noise = noise
+	return _noise_for_wear
+
+
+func _lit_glass() -> StandardMaterial3D:
+	var m := _plain(0.25, 0.3)
+	m.emission_enabled = true
+	m.emission = Color(1.0, 0.70, 0.40)
+	m.emission_energy_multiplier = 0.0
 	return m
 
 
@@ -364,6 +441,10 @@ func build(mb: MB, rec: Dictionary) -> void:
 		var f: Face = faces[k]
 		var base := f.glow - 0.8
 		var yg := minf(datum, f.top - 1.2)
+		if yg <= base and f.top - (f.glow + 0.3) > 2.2:
+			# A wall standing on ground higher than the building's main floor (a large building across a slope:
+			# Romsdalskvartalet climbs 11 m) has a floor of its own at its foot, with windows and doors, not a blank face.
+			yg = f.glow + 0.3
 		if f.top - base < 1.0 or yg <= base:
 			mb.quad(wall_m, f.p(0, base), f.p(f.length, base), f.p(f.length, f.top), f.p(0, f.top), f.n, wall)
 		else:
@@ -386,7 +467,7 @@ func build(mb: MB, rec: Dictionary) -> void:
 				if absf(prev.t.dot(f.n)) > 0.3:
 					var ct := minf(f.top, prev.top)
 					mb.box("trim", f.p(0.0, (yg + ct) * 0.5, -0.02), f.t, Vector3.UP, f.n, Vector3(0.07, (ct - yg) * 0.5, 0.07), trim)
-		_wall_top(mb, f, wall_m, wall, roof, trim, roof_m)
+		_wall_top(mb, f, wall_m, wall, roof, trim, roof_m, st)
 
 	# the roof itself
 	var peak := Vector3(0, -INF, 0)
@@ -433,6 +514,19 @@ func build(mb: MB, rec: Dictionary) -> void:
 		var up_a := Vector3(0, sa[4], 0)
 		var up_b := Vector3(0, sa[5], 0)
 		var lowy := Vector3(0, sa[6] - 0.05, 0)
+		# (a face a storey tall or more is a wall like any other, with windows: a tower over a low wing)
+		var sf := Face.new()
+		sf.a = a3
+		sf.length = a3.distance_to(b3)
+		sf.n = Vector3(sa[7], 0, sa[8])
+		var level := minf(sa[4], sa[5])
+		if sf.length > 3.0 and level - sa[6] > 3.2:
+			sf.t = (b3 - a3) / sf.length
+			if _storeys(mb, sf, 0.0, sf.length, sa[6] + 0.4, level, st, wall_m, wall, trim):
+				mb.quad(wall_m, a3 + lowy, b3 + lowy, b3 + Vector3(0, sa[6] + 0.4, 0), a3 + Vector3(0, sa[6] + 0.4, 0), sf.n, wall)
+				if absf(sa[4] - sa[5]) > 0.02:
+					mb.quad(wall_m, a3 + Vector3(0, level, 0), b3 + Vector3(0, level, 0), b3 + up_b, a3 + up_a, sf.n, wall)
+				continue
 		mb.quad(wall_m, a3 + lowy, b3 + lowy, b3 + up_b, a3 + up_a, Vector3(sa[7], 0, sa[8]), wall)
 	if (rec["style"] <= 1 or rec["style"] == 3) and rec["area"] > 50.0 and peak.y > -1e9:
 		# chimney just off the ridge
@@ -443,9 +537,40 @@ func build(mb: MB, rec: Dictionary) -> void:
 			mb.box("plaster", Vector3(c.x, peak.y - 0.1, c.z), Vector3.RIGHT, Vector3.UP, Vector3.BACK, Vector3(0.3, 0.85, 0.3), Color(0.5, 0.33, 0.27))
 
 
+## Storeys with a row of windows each, on the stretch s0..s1 of a wall between the heights lo and level. Used
+## where a wall carries on up past the storeys of the house below: the tall part of a block beside a low wing,
+## and the upright face where a higher part of a building stands over a lower roof. Returns false, with nothing
+## drawn, where there is no room for a storey or a window.
+func _storeys(mb: MB, f: Face, s0: float, s1: float, lo: float, level: float, st: Dictionary, wall_m: String, wall: Color, trim: Color) -> bool:
+	if st.is_empty() or st.get("garage", false):
+		return false
+	var f_h: float = st.get("f_h", 2.8)
+	var n_fl := int((level - lo) / f_h + 0.3)
+	var bays := int((s1 - s0 - 1.0) / float(st.get("bay", 3.0)))
+	if n_fl < 1 or bays < 1:
+		return false
+	var win: Array = st["win"]
+	var fh := (level - lo) / float(n_fl)
+	var bw := (s1 - s0) / float(bays)
+	var ow := minf(win[0], bw - 0.4)
+	var sill := minf(win[2], fh * 0.4)
+	var oh := minf(win[1], fh - sill - 0.25)
+	for fl in n_fl:
+		var yb := lo + fh * float(fl)
+		mb.quad(wall_m, f.p(s0, yb), f.p(s1, yb), f.p(s1, yb + sill), f.p(s0, yb + sill), f.n, wall)
+		mb.quad(wall_m, f.p(s0, yb + sill + oh), f.p(s1, yb + sill + oh), f.p(s1, yb + fh), f.p(s0, yb + fh), f.n, wall)
+		for bi in bays:
+			var c0 := s0 + bw * float(bi)
+			var w0 := c0 + (bw - ow) * 0.5
+			mb.quad(wall_m, f.p(c0, yb + sill), f.p(w0, yb + sill), f.p(w0, yb + sill + oh), f.p(c0, yb + sill + oh), f.n, wall)
+			mb.quad(wall_m, f.p(w0 + ow, yb + sill), f.p(c0 + bw, yb + sill), f.p(c0 + bw, yb + sill + oh), f.p(w0 + ow, yb + sill + oh), f.n, wall)
+			_window(mb, f, w0, w0 + ow, yb + sill, yb + sill + oh, st["depth"], wall_m, wall, trim, st["sills"], st["pane"])
+	return true
+
+
 ## The part of a wall above its lowest stretch (gables, steps), and what sits on it: the roof carried
 ## out past the wall with a fascia board, or a coping on a flat roof.
-func _wall_top(mb: MB, f: Face, wall_m: String, wall: Color, roof: Color, trim: Color, roof_m: String) -> void:
+func _wall_top(mb: MB, f: Face, wall_m: String, wall: Color, roof: Color, trim: Color, roof_m: String, st: Dictionary = {}) -> void:
 	var w := f.prof
 	var i := 7
 	while i + 6 < w.size():
@@ -454,7 +579,13 @@ func _wall_top(mb: MB, f: Face, wall_m: String, wall: Color, roof: Color, trim: 
 		var s1: float = w[i + 2]
 		var y1: float = w[i + 3]
 		if y0 > f.top + 0.02 or y1 > f.top + 0.02:
-			mb.quad(wall_m, f.p(s0, f.top), f.p(s1, f.top), f.p(s1, y1), f.p(s0, y0), f.n, wall)
+			# A stretch that stands storeys taller than the lowest one (the tall part of a block with a low wing
+			# along the same wall) is not a gable: it has its own storeys, with windows, up to where it is level.
+			var lo := f.top
+			if _storeys(mb, f, s0, s1, lo, minf(y0, y1), st, wall_m, wall, trim):
+				lo = minf(y0, y1)
+			if y0 > lo + 0.02 or y1 > lo + 0.02:
+				mb.quad(wall_m, f.p(s0, lo), f.p(s1, lo), f.p(s1, y1), f.p(s0, y0), f.n, wall)
 		if int(w[i + 4]) == 1:
 			var o0 := f.p(s0, w[i + 5], -EAVE)
 			var o1 := f.p(s1, w[i + 6], -EAVE)
@@ -659,7 +790,10 @@ func _reveal(mb: MB, f: Face, s0: float, s1: float, y0: float, y1: float, d: flo
 
 func _window(mb: MB, f: Face, s0: float, s1: float, y0: float, y1: float, d: float, wall_m: String, wall: Color, trim: Color, sill: bool, pane: int) -> void:
 	_reveal(mb, f, s0, s1, y0, y1, d, wall_m, wall)
-	mb.quad("glass", f.p(s0, y0, d), f.p(s1, y0, d), f.p(s1, y1, d), f.p(s0, y1, d), f.n, GLASS)
+	# which windows have a light on at night is settled by where the window is, so it is always the same ones
+	var at := f.p((s0 + s1) * 0.5, y0, d)
+	var pick := fposmod(sin(at.x * 12.9898 + at.y * 37.719 + at.z * 78.233) * 43758.5453, 1.0)
+	mb.quad("glass_late" if pick < 0.07 else ("glass_eve" if pick < 0.48 else "glass"), f.p(s0, y0, d), f.p(s1, y0, d), f.p(s1, y1, d), f.p(s0, y1, d), f.n, GLASS)
 	var fw := 0.06
 	var e := d - 0.03
 	mb.quad("trim", f.p(s0, y0, e), f.p(s0 + fw, y0, e), f.p(s0 + fw, y1, e), f.p(s0, y1, e), f.n, trim)

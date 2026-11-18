@@ -101,6 +101,7 @@ ASPHALT_AT = [
 KERB_OPENINGS = [(225.0, 63.9, 3.5)]
 BUILDINGS[976346020] = {"plain": True}                # Øvre veg: a plain roof, the fitted one was a mess
 BUILDINGS[976347024] = {"plain": True, "levels": 2}   # Øvre veg: likewise, and two storeys
+BUILDINGS[945985072] = {"plain": True}                # Fjellbruvegen, Granlia: the wing's roof stood 2.4 m over the main roof's eave (note 17 Nov)
 BUILDINGS[976348871] = {"levels": 5}                  # the apartment block on Elvemoloen
 BUILDINGS[976346084] = {"name": "Bunnpris"}           # Bunnpris sentrum, Fjordgata
 BUILDINGS[976346023] = {"join": True}                 # Romsdalsgata: built wall to wall with its neighbours
@@ -147,3 +148,79 @@ BUILDINGS[976346023]["roof"] = (170, 80, 60)             # red tiles
 NO_PHOTO_COLOUR = {730684613, 976346106, 935525934, 320343046, 976346076, 401877810}
 for _id, _wall in {320343046: (236, 234, 226), 320343048: (236, 234, 226), 976330687: (216, 200, 160), 976346076: (158, 160, 138)}.items():
     BUILDINGS.setdefault(_id, {})["wall"] = _wall
+
+# ---- notes of 17 November 2026, evening ----
+# Unpaved ground closed in by paving, that is paved too: (x, z, how far it may reach). The whole pocket of open
+# ground round the point becomes asphalt (ASPHALT_POCKETS) or slabs like a sidewalk (PAVING_POCKETS).
+ASPHALT_POCKETS = [(154.3, 26.1, 30), (161.0, 39.0, 30), (163.4, 26.8, 30), (159.6, 20.0, 30), (170.0, 41.9, 30)]      # Rutebilholdeplassen: no grass islands
+PAVING_POCKETS = [(2.1, 6.5, 40), (-11.4, 9.8, 40), (-18.2, 11.8, 40), (20.6, 1.8, 40)]                                 # Torget: the strips of grass along Storgata
+NO_TREES += [(161.09, 35.83), (295.08, -94.86), (301.0, -98.75), (328.82, -115.94)]     # Rutebilholdeplassen, Moldetrappa
+NO_PROPS += [(71.39, -28.34)]                                                           # a bench on Storgata
+
+# ---- notes of 17 November 2026, 21:35 ----
+PAVING_POCKETS += [(10.5, 67.6, 40), (-9.0, 85.8, 40)]                       # Torget and Hamnegata: grass strips and a patch of asphalt in the paving
+NO_TREES += [(-16.0, 93.75), (-10.1, 103.78)]                                 # Hamnegata
+
+# ---- notes of 17 November 2026, 22:40 ----
+for _id in (976345629, 976345657, 976345645, 945728570):                     # Frænavegen at Fuglset, Fabrikkvegen: roofs in pieces
+    BUILDINGS[_id] = {"plain": True}
+BUILDINGS[320343049] = {"style": 6}                                           # Romsdalskvartalet: shops and offices with windows and doors, not a blank box
+ASPHALT_POCKETS += [(657.4, -264.3, 30), (649.0, -243.7, 30), (665.4, -219.2, 30)]      # Frænavegen / Moldegårdsvegen
+PAVING_POCKETS += [(139.9, -43.6, 30), (107.3, -37.7, 30)]                              # Storgata
+# Bridges that lie level, at the height of their higher end, where the map's ends would give a slope: a point on each.
+LEVEL_BRIDGES = [(1480.3, -248.0)]                                            # the footbridge over Fannestrandvegen at Moldegård
+# Bunnpris Fuglset is in the foot of the block of flats (so the map says: the shop's point lies in it, and a
+# recycling point "Bunnpris Fuglset" stands on the open ground in front); that open ground is its car park.
+PARKING += [[(2006, -766), (2046, -782), (2044, -790), (2012, -790), (2004, -780)]]
+BUILDINGS[976350721] = {"name": "Bunnpris"}
+# Raised beds of roses, waist high in concrete: (x, z, length, width, the way the length runs in degrees).
+ROSE_BEDS = [(4.1, -45.6, 3.2, 1.6, 0.0, "fit")]                                     # the corner of Rådhusplassen by the town hall
+
+# ---- notes of 18 November 2026, 00:35-01:00 ----
+NO_TREES_IN = [(1332.3, -225.7, 20.0)]                                        # patches cleared of trees: (x, z, radius)
+NAME_SIGN_SWAP = [(65.76, -23.8)]                                             # Storgata / Rutebilholdeplassen: the plates hung the wrong way round
+ASPHALT_POCKETS += [(276.2, -192.6, 22)]
+ASPHALT_AT += [(463.5, 45.4, 12), (339.1, -13.3, 8), (340.6, -18.8, 8), (351.0, -12.3, 8), (351.4, -20.2, 8), (359.1, -53.3, 8),      # Kåre Solhjells veg, Krubba, Olsmedbakken
+               (237.3, 39.1, 8), (1153.8, -198.8, 28), (1277.9, -179.1, 9)]                                                              # Elvemoloen; the whole lot at Lingedalsvegen; in front of the bus shelter
+PAVING_POCKETS += [(1158.4, -144.8, 25), (1122.5, -130.6, 25), (357.5, 4.6, 20), (78.7, 24.1, 20)]
+PARKING += [[(1316, -237), (1348, -237), (1348, -214), (1316, -214)],        # Fannestrandvegen at Moldegård (the trees there are gone)
+            [(1704, -153), (1760, -153), (1760, -131), (1704, -131)],        # Verftsgata
+            [(57, 23), (78, 23), (78, 37), (57, 37)]]                        # Rutebilholdeplassen
+BUILDINGS[1080586318] = {"add_levels": 1}                                     # Fannestrandvegen at Bolsønes: too low
+BRIDGE_HALF = [(250.1, -66.0, 5.2)]                                           # Romsdalsgata over Moldeelva: no wider than the road and its two sidewalks
+SUNK_LOTS = [(856.8, -162.2)]                                                 # Moldegårdsvegen: the car park lies a metre under the road
+SEA_CHANNELS = [([(259.5, -1.0), (259.5, 72.0)], 3.5, -0.9), ([(258.5, 82.0), (258.5, 92.0)], 3.5, -0.9)]     # Moldeelva's mouth beside Elvemoloen: open to the fjord
+SITES = [
+    {"kind": "drive_through", "osm_id": 688861941, "name": "McDonald's", "order": (1167.8, -175.3), "sign": (1140.0, -168.0)},   # Fannestrandvegen at Moldegård
+    {"kind": "forecourt", "osm_id": 688866443, "name": "Shell", "at": (1723.7, -188.4), "toward": (1722.7, -169.4), "out": 12.0},  # Verftsgata 1 (the brand from a charging-point listing)
+    {"kind": "doors", "osm_id": 401863352, "at": (1657.0, -10.0), "toward": (1657.0, 30.0), "colour": (0.70, 0.08, 0.07), "count": 5},      # Molde brannstasjon: its doors face the fjord (note of 18 Nov, 03:00)
+    {"kind": "tower", "osm_id": 401863352, "at": (1626.0, -30.0), "toward": (1590.0, -30.0), "side": 4.2, "tall": 15.0, "colour": (0.93, 0.93, 0.91)},   # and its hose tower on the west side
+    {"kind": "wall_sign", "osm_id": 401863788, "at": (1140.5, 70.3), "toward": (1139.0, 60.9), "text": "KIWI", "ink": (1.0, 1.0, 1.0), "back": (0.36, 0.62, 0.12), "tall": 1.5, "up": 4.6, "door": True},   # Kiwi Grandgården: its way in
+    {"kind": "wall_sign", "osm_id": 183284347, "at": (1540.2, -68.9), "toward": (1545.5, -50.5), "text": "Glamox", "ink": (0.05, 0.16, 0.36), "tall": 2.4, "up": 6.5, "long": True},
+    {"kind": "construction", "at": (69.8, -31.4), "front": -27.6, "floors": 3},                                                  # the gap on Storgata by Rutebilholdeplassen
+    {"kind": "rose_round", "at": (1140.0, -136.2), "r": 3.3},                                                                    # the roundabout on Fannestrandvegen
+]
+BUILDINGS[688861941] = {"name": "McDonald's", "wall": (88, 72, 60), "plain": True, "levels": 1}
+BUILDINGS[688866443] = {"name": "Shell", "wall": (232, 230, 224), "plain": True, "levels": 1}
+BUILDINGS[401863352] = {"name": "Molde brannstasjon", "wall": (240, 240, 236), "plain": True, "levels": 2}   # white, flat roof, two storeys
+DOOR_SIGNS += [{"at": (1152.1, -177.0), "text": "McDONALD'S", "shop": True, "osm_id": 688861941},
+               {"at": (1723.7, -188.4), "text": "SHELL", "shop": True, "osm_id": 688866443}]
+ASPHALT_AT += [(1723.0, -175.0, 16)]                                         # the forecourt
+
+# ---- notes of 18 November 2026, 02:50-03:15 ----
+PATCHES = [("paving", 247.3, -62.2, 2.6),              # Romsdalsgata: the sidewalk carried on to the bridge
+           ("island", 362.6, -61.5, 3.0),              # a tongue of paving in the yard off Romsdalsgata: asphalt
+           ("none", 344.6, -72.8, 3.2),                # a blot of asphalt on the bank beside Romsdalsgata
+           ("asphalt", 1160.5, -24.0, 6.0)]            # Oscar Hanssens veg: the car park joined to the road
+TRIM_BUILDINGS = {976346021}                           # Øvre veg: a house standing out into the sidewalk
+ASPHALT_AT += [(637.8, -218.5, 10), (1186.2, 35.2, 8), (1184.7, 39.0, 8), (1228.9, 31.0, 10), (1355.1, -24.3, 45), (1698.7, -175.7, 9), (1702.0, -185.4, 9)]
+PAVING_POCKETS += [(1161.1, 25.8, 20)]
+ASPHALT_POCKETS += [(1253.0, 22.6, 40)]                # Birger Hatlebakks veg: the road as wide as to the sidewalk
+BUILDINGS[976330680] = {"name": "Molde Storsenter", "wall": (208, 208, 205)}          # light grey
+BUILDINGS[679497294] = {"wall": (226, 221, 200)}                                     # Fridtjof Nansens gate: light yellow-grey
+BUILDINGS[172569171] = {"wall": (206, 206, 204)}                                     # the school beside it: light grey
+BUILDINGS[183284347] = {"name": "Glamox", "wall": (224, 225, 226)}                   # (white-grey: no picture found, from memory)
+BUILDINGS[401863788] = {"name": "Kiwi Grandgården"}
+BUILDINGS[827761794] = {"plain": True}                                               # Tøndervegen: a roof that came out broken
+BUILDINGS[1080586318] = {"add_levels": 2}                                            # taller still
+DOOR_SIGNS += [{"at": (2019.9, -790.0), "text": "BUNNPRIS", "shop": True, "osm_id": 976350721}]   # Bunnpris Fuglset: the shop front toward its car park

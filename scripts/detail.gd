@@ -127,12 +127,24 @@ func update(p: Vector3) -> void:
 			if _cells.has(k) or not (buildings.has(k) or road_cells.has(k) or paved.has(k) or world.props.cells.has(k)):
 				continue
 			var d := _dist(k, p)
-			if d < NEAR:
+			if d < NEAR and _on_fine_ground(k):
 				_queue.append([d, k])
 	_queue.sort_custom(func(a, b): return a[0] < b[0])
 	for k in _cells.keys():
-		if _dist(k, p) > FAR:
+		if _dist(k, p) > FAR or not _on_fine_ground(k):
 			_drop(k)
+
+
+## Paving lies on the 1 m ground, which is pressed down under it. Beyond that the far ground is drawn, every
+## tenth point of it, and that stands up through asphalt in patches: so a cell is kept only while the 1 m ground
+## is under it (scripts/world.gd: the cells within TR of `near_at`).
+func _on_fine_ground(k: Vector2i) -> bool:
+	return absi(k.x - world.near_at.x) <= world.TR and absi(k.y - world.near_at.y) <= world.TR
+
+
+## The 1 m ground has been laid out around another cell: look again at which cells to keep.
+func ground_moved() -> void:
+	_centre = Vector3(1e9, 0, 1e9)
 
 
 func _dist(k: Vector2i, p: Vector3) -> float:
@@ -294,12 +306,27 @@ func _p(p: Vector2, lift := 0.125) -> Vector3:
 ## The height of the laid asphalt at a point, before its lift (NAN where there is none). The triangles of a
 ## cell are sorted by the 2.5 m square each lies in, the first time the cell is asked about.
 func surface_at(x: float, z: float) -> float:
+	return _laid_at(x, z, 0)
+
+
+## The top of what is laid at a point, as it is drawn: the asphalt (lifted 10 cm over its ground) or the slabs of a
+## sidewalk (23 cm). NAN where neither lies. What stands on the paving stands at this height.
+func top_at(x: float, z: float) -> float:
+	var walk := _laid_at(x, z, 1)
+	if not is_nan(walk):
+		return walk + 0.23
+	var road := _laid_at(x, z, 0)
+	return road + 0.10 if not is_nan(road) else NAN
+
+
+func _laid_at(x: float, z: float, part: int) -> float:
 	var key := cell_of(x, z)
 	var pv = paved.get(key)
 	if pv == null:
 		return NAN
-	var arr: PackedFloat32Array = pv[0]
-	var idx = _tri_index.get(key)
+	var arr: PackedFloat32Array = pv[part]
+	var ikey := Vector3i(key.x, key.y, part)
+	var idx = _tri_index.get(ikey)
 	if idx == null:
 		if _tri_index.size() > 150:
 			_tri_index.clear()
@@ -311,7 +338,7 @@ func surface_at(x: float, z: float) -> float:
 				idx[sq] = []
 			idx[sq].append(i)
 			i += 9
-		_tri_index[key] = idx
+		_tri_index[ikey] = idx
 	var list = idx.get(Vector2i(int(floor(x / 2.5)), int(floor(z / 2.5))))
 	if list == null:
 		return NAN
@@ -375,8 +402,10 @@ func _paved_part(mb, cv: PackedVector3Array, part: int, arr: PackedFloat32Array,
 			var b := b0 + Vector3(0, 0.23, 0)
 			if minf(a.y, b.y) < 0.6:
 				continue
-			var dn := Vector3(0, 0.9, 0)
-			mb.quad("trim", a, b, b - dn, a - dn, out, KERB)
+			# down to the ground beside it, and into it: on a wall or an embankment nothing shows under the sidewalk
+			var da := Vector3(0, maxf(0.9, a.y - world.height_at(a.x + o0.x * 0.3, a.z + o0.z * 0.3) + 0.3), 0)
+			var db := Vector3(0, maxf(0.9, b.y - world.height_at(b.x + o1.x * 0.3, b.z + o1.z * 0.3) + 0.3), 0)
+			mb.quad("trim", a, b, b - db, a - da, out, KERB)
 			_quad_cv(cv, a, b, b + o1 * 1.2 - Vector3(0, 0.3, 0), a + o0 * 1.2 - Vector3(0, 0.3, 0))      # a long, gentle ramp to drive over: no jolt
 		else:
 			# the edge of the asphalt falling away into the ground: a gentle ramp, so wheels roll up onto the road
@@ -385,7 +414,10 @@ func _paved_part(mb, cv: PackedVector3Array, part: int, arr: PackedFloat32Array,
 			if minf(a.y, b.y) < 0.5:
 				continue
 			# (drawn steep, so that a bank beside the road cannot cut it into a ragged edge; solid as a long ramp)
-			mb.quad("asphalt", a, b, b + o1 * 0.5 - Vector3(0, 1.0, 0), a + o0 * 0.5 - Vector3(0, 1.0, 0), (up * 0.45 + out).normalized(), SHOULDER)
+			# (and down into the ground beside it, however far below that is)
+			var ea := maxf(1.0, a.y - world.height_at(a.x + o0.x * 0.5, a.z + o0.z * 0.5) + 0.3)
+			var eb := maxf(1.0, b.y - world.height_at(b.x + o1.x * 0.5, b.z + o1.z * 0.5) + 0.3)
+			mb.quad("asphalt", a, b, b + o1 * 0.5 - Vector3(0, eb, 0), a + o0 * 0.5 - Vector3(0, ea, 0), (up * 0.45 + out).normalized(), SHOULDER)
 			_quad_cv(cv, a, b, b + o1 * 1.6 - Vector3(0, 0.7, 0), a + o0 * 1.6 - Vector3(0, 0.7, 0))
 
 
@@ -469,6 +501,38 @@ func _road_segment(mb, cv: PackedVector3Array, way: Array, i: int) -> void:
 		var ok: PackedByteArray = way[5]
 		if ok[i] == 0 or ok[i + 1] == 0:
 			return
+		# Roads that look used. Where the tyres run, two darker strips to a lane (one lane on a narrow road).
+		var lanes := [0.5, -0.5] if half >= 2.6 else [0.0]
+		for lane in lanes:
+			for track in [-0.78, 0.78]:
+				var off: float = float(lane) * half + float(track)
+				if absf(off) > half - 0.4:
+					continue
+				var t0 := _p(p0 + n0 * off, 0.108)
+				var t1 := _p(p1 + n1 * off, 0.108)
+				var w0 := Vector3(n0.x, 0, n0.y) * 0.27
+				var w1 := Vector3(n1.x, 0, n1.y) * 0.27
+				mb.quad("wear", t0 + w0, t0 - w0, t1 - w1, t1 + w1, up, Color(0.02, 0.02, 0.025, 0.20))
+		# Iron in the road: a drain grate by the kerb every 24 m or so, a manhole cover in a lane now and then.
+		var along := int(dist[i] / 3.0)
+		var pick := fposmod(sin(p0.x * 12.9898 + p0.y * 78.233) * 43758.5453, 1.0)
+		var dir3 := Vector3(p1.x - p0.x, 0, p1.y - p0.y).normalized()
+		var iron := Color(0.10, 0.10, 0.11)
+		if along % 8 == 3:
+			for sgn in [1.0, -1.0]:
+				var side: float = sgn
+				var g := _p(p0 + n0 * (side * (half - 0.32)), 0.112)
+				var acr := Vector3(n0.x, 0, n0.y) * 0.17
+				mb.quad("iron", g - dir3 * 0.24 + acr, g - dir3 * 0.24 - acr, g + dir3 * 0.24 - acr, g + dir3 * 0.24 + acr, up, iron)
+				for bar in 3:                                  # the slots of the grate
+					var b := g + dir3 * (float(bar - 1) * 0.14) + Vector3(0, 0.002, 0)
+					mb.quad("iron", b - dir3 * 0.025 + acr * 0.8, b - dir3 * 0.025 - acr * 0.8, b + dir3 * 0.025 - acr * 0.8, b + dir3 * 0.025 + acr * 0.8, up, Color(0.02, 0.02, 0.02))
+		if along % 23 == 11 and pick < 0.7:
+			var c := _p(p0 + n0 * ((0.5 if pick < 0.35 else -0.5) * half * (1.0 if half >= 2.6 else 0.0) + 0.2), 0.112)
+			for k in 10:
+				var a0 := TAU * float(k) / 10.0
+				var a1 := TAU * float(k + 1) / 10.0
+				mb.tri("iron", c, c + Vector3(cos(a0), 0, sin(a0)) * 0.33, c + Vector3(cos(a1), 0, sin(a1)) * 0.33, up, iron)
 		# each stretch in two pieces, lying on the asphalt as it rises and falls
 		for part in 2:
 			var fa := float(part) * 0.5

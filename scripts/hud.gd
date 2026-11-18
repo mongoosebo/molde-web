@@ -5,6 +5,7 @@ var world
 var player
 
 var _loading: ColorRect
+var _under: ColorRect
 var _loading_label: Label
 var _district: Label
 var _street: Label
@@ -75,9 +76,9 @@ func _ready() -> void:
 	add_child(_stamina_fill)
 
 	_help = _label(13, Color(1, 1, 1, 0.6))
-	_help.text = "WASD move  ·  Mouse look  ·  Shift sprint  ·  Space jump  ·  F get in/out of a vehicle  ·  Space in a car: drift  ·  Bicycle: hold Space and let go to jump  ·  Helicopter: mouse turns, Space up, Ctrl or C down, WASD lean  ·  Wheel zoom  ·  F11 fullscreen  ·  Esc free the mouse  ·  Right mouse: leave a note"
+	_help.text = "WASD move  ·  Mouse look  ·  Shift sprint (swim faster)  ·  Space jump  ·  F get in/out of a vehicle  ·  Space in a car: drift  ·  Bicycle: hold Space and let go to jump  ·  Helicopter: mouse turns, Space up, Ctrl or C down, WASD lean  ·  Wheel zoom  ·  F11 fullscreen  ·  [ ] time of day  ·  V weather  ·  M mute  ·  Esc menu  ·  F5 start again  ·  Right mouse: leave a note"
 	if OS.has_feature("web"):
-		_help.text = "WASD move  ·  Mouse look  ·  Shift sprint  ·  Space jump  ·  F get in/out of a vehicle  ·  Space in a car: drift  ·  Bicycle: hold Space and let go to jump  ·  Helicopter: mouse turns, Space up, C down, WASD lean  ·  Wheel zoom  ·  F11 fullscreen  ·  Esc free the mouse  ·  Click to take the mouse"
+		_help.text = "WASD move  ·  Mouse look  ·  Shift sprint (swim faster)  ·  Space jump  ·  F get in/out of a vehicle  ·  Space in a car: drift  ·  Bicycle: hold Space and let go to jump  ·  Helicopter: mouse turns, Space up, C down, WASD lean  ·  Wheel zoom  ·  F11 fullscreen  ·  [ ] time of day  ·  V weather  ·  M mute  ·  Esc menu  ·  F5 start again  ·  Click to take the mouse"
 
 	_intro = _label(22, Color(1, 1, 1, 1))
 	_intro.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -87,6 +88,12 @@ func _ready() -> void:
 	_prompt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_prompt.visible = false
 
+	_under = ColorRect.new()                       # the view under water: dark green-blue
+	_under.color = Color(0.02, 0.16, 0.19, 0.72)
+	_under.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_under.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_under.visible = false
+	add_child(_under)
 	_loading = ColorRect.new()
 	_loading.color = Color(0.03, 0.035, 0.04)
 	_loading.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -131,6 +138,7 @@ func _process(delta: float) -> void:
 	if player == null:
 		return
 	_age += delta
+	_under.visible = player.under_water
 	_intro.modulate.a = clampf(minf(_age / 1.5, (9.0 - _age) / 2.0), 0.0, 1.0)
 	_help.modulate.a = clampf((40.0 - _age) / 3.0, 0.0, 1.0)
 

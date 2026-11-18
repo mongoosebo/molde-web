@@ -11,7 +11,7 @@ const SPECS := {
 	"radhus": {
 		"floors": 3, "g_h": 3.6, "f_h": 3.1, "bay": 3.2, "margin": 0.5,
 		"g_open": [2.7, 2.6, 0.35], "u_open": [2.7, 1.7, 0.85],
-		"wall": "concrete", "plinth": "concrete_dark", "glass": "glass_gold", "frame": "bronze",
+		"wall": "concrete_brown", "plinth": "concrete_dark", "glass": "glass_gold", "frame": "bronze",
 		"top": 0.8, "roof": "garden", "sign": "MOLDE RÅDHUS", "sign_color": Color(0.80, 0.62, 0.22), "sign_out": 0.80},
 	# Post-war reconstruction blocks on Storgata: painted plaster, shops at street level, tiled hip roofs.
 	"storgata31": {
@@ -122,6 +122,7 @@ func _plain(color: Color, rough: float, metallic := 0.0) -> StandardMaterial3D:
 func _make_materials() -> void:
 	_mats = {
 		"concrete": _textured("concrete", Color(1, 1, 1), 3.0, 0.9),
+		"concrete_brown": _textured("concrete", Color(0.50, 0.39, 0.31), 3.0, 0.9),   # the town hall and its steps: dark brown concrete (note of 17 Nov)
 		"concrete_dark": _textured("concrete", Color(0.55, 0.54, 0.53), 3.0, 0.92),
 		"plaster_ochre": _textured("plaster", Color(0.80, 0.63, 0.33), 2.0, 0.93),
 		"plaster_terracotta": _textured("plaster", Color(0.72, 0.36, 0.25), 2.0, 0.93),
@@ -305,14 +306,14 @@ func _facade(mb: MB, f: Face, ybase: float, yg: float, ytop: float, spec: Dictio
 ## The wall on the square has the glazed entrance under a heavy concrete beam that carries the name.
 func _radhus_facade(mb: MB, f: Face, ybase: float, yg: float, ytop: float, front: bool) -> void:
 	var length := f.length
-	mb.quad("concrete", f.p(0, ybase), f.p(length, ybase), f.p(length, yg), f.p(0, yg), f.n)
+	mb.quad("concrete_brown", f.p(0, ybase), f.p(length, ybase), f.p(length, yg), f.p(0, yg), f.n)
 	if length < 5.0:
-		mb.quad("concrete", f.p(0, yg), f.p(length, yg), f.p(length, ytop), f.p(0, ytop), f.n)
+		mb.quad("concrete_brown", f.p(0, yg), f.p(length, yg), f.p(length, ytop), f.p(0, ytop), f.n)
 		return
 	var pier := clampf(length * 0.12, 1.2, 2.8)
 	for s in [pier * 0.5, length - pier * 0.5]:
 		var sc: float = s
-		mb.box("concrete", f.p(sc, (yg + ytop) * 0.5 + 0.3, -0.12), f.t, Vector3.UP, f.n, Vector3(pier * 0.5, (ytop - yg) * 0.5 + 0.3, 0.3))
+		mb.box("concrete_brown", f.p(sc, (yg + ytop) * 0.5 + 0.3, -0.12), f.t, Vector3.UP, f.n, Vector3(pier * 0.5, (ytop - yg) * 0.5 + 0.3, 0.3))
 	var s0 := pier
 	var s1 := length - pier
 	var back := 0.4                                   # the glass stands back from the piers
@@ -326,13 +327,13 @@ func _radhus_facade(mb: MB, f: Face, ybase: float, yg: float, ytop: float, front
 		for k in doors + 1:
 			var sm := lerpf(s0, s1, float(k) / float(doors))
 			mb.box("fin", f.p(sm, (yg + g_top) * 0.5, back - 0.05), f.t, Vector3.UP, f.n, Vector3(0.045, (g_top - yg) * 0.5, 0.07))
-		mb.box("concrete", f.p((s0 + s1) * 0.5, (g_top + beam_top) * 0.5, -0.35), f.t, Vector3.UP, f.n, Vector3((s1 - s0) * 0.5 + 0.4, (beam_top - g_top) * 0.5, 0.42))
+		mb.box("concrete_brown", f.p((s0 + s1) * 0.5, (g_top + beam_top) * 0.5, -0.35), f.t, Vector3.UP, f.n, Vector3((s1 - s0) * 0.5 + 0.4, (beam_top - g_top) * 0.5, 0.42))
 		for k in 3:
-			mb.box("concrete", f.p((s0 + s1) * 0.5, yg - 0.08 - 0.16 * float(k), -0.6 - 0.4 * float(k)), f.t, Vector3.UP, f.n,
+			mb.box("concrete_brown", f.p((s0 + s1) * 0.5, yg - 0.08 - 0.16 * float(k), -0.6 - 0.4 * float(k)), f.t, Vector3.UP, f.n,
 				Vector3((s1 - s0) * 0.5 - 0.5 + 0.4 * float(k), 0.08, 0.6 + 0.4 * float(k)))
 		glass_lo = beam_top
 	else:
-		mb.quad("concrete", f.p(s0, yg, back), f.p(s1, yg, back), f.p(s1, glass_lo, back), f.p(s0, glass_lo, back), f.n)
+		mb.quad("concrete_brown", f.p(s0, yg, back), f.p(s1, yg, back), f.p(s1, glass_lo, back), f.p(s0, glass_lo, back), f.n)
 	mb.quad("glass_gold", f.p(s0, glass_lo, back), f.p(s1, glass_lo, back), f.p(s1, ytop, back), f.p(s0, ytop, back), f.n)
 	# floor edges showing behind the glass, then the fins
 	var yf := glass_lo + 3.1
@@ -343,7 +344,7 @@ func _radhus_facade(mb: MB, f: Face, ybase: float, yg: float, ytop: float, front
 	for k in count + 1:
 		var sf := lerpf(s0, s1, float(k) / float(count))
 		mb.box("fin", f.p(sf, (glass_lo + ytop) * 0.5 + 0.3, 0.12), f.t, Vector3.UP, f.n, Vector3(0.04, (ytop - glass_lo) * 0.5 + 0.3, 0.3))
-	mb.quad("concrete", f.p(s0, ytop, back), f.p(s1, ytop, back), f.p(s1, ytop, -0.02), f.p(s0, ytop, -0.02), Vector3.UP)
+	mb.quad("concrete_brown", f.p(s0, ytop, back), f.p(s1, ytop, back), f.p(s1, ytop, -0.02), f.p(s0, ytop, -0.02), Vector3.UP)
 
 
 # ------------------------------------------------------------------ roofs
@@ -637,7 +638,7 @@ func _build_plaza(poly: PackedVector2Array, centre: Vector2) -> void:
 			# step k: its top one rise lower than the one before, its front edge one tread further out
 			var top_y: float = rs["top"] + 0.07 - rise * float(k)
 			var c := mid + outw * (tread * (float(k) - 0.5)) + Vector3(0, top_y - 0.6, 0)
-			mb.box("concrete", c, along, Vector3.UP, outw, Vector3(length * 0.5 - 0.5, 0.6, tread * 0.5))
+			mb.box("concrete_brown", c, along, Vector3.UP, outw, Vector3(length * 0.5 - 0.5, 0.6, tread * 0.5))
 	# Rosepiken — the Rose Maiden — in her fountain basin.
 	var at := centre + Vector2(7.0, -9.0)
 	var spot: Array = world.meta.get("rosepiken", [])
@@ -652,9 +653,9 @@ func _build_plaza(poly: PackedVector2Array, centre: Vector2) -> void:
 		var d0 := Vector3(cos(a0), 0, sin(a0))
 		var d1 := Vector3(cos(a1), 0, sin(a1))
 		var nm := (d0 + d1).normalized()
-		mb.quad("concrete", o + d0 * 2.0, o + d1 * 2.0, o + d1 * 2.0 + Vector3(0, 0.55, 0), o + d0 * 2.0 + Vector3(0, 0.55, 0), nm)
-		mb.quad("concrete", o + d0 * 1.75 + Vector3(0, 0.3, 0), o + d1 * 1.75 + Vector3(0, 0.3, 0), o + d1 * 1.75 + Vector3(0, 0.55, 0), o + d0 * 1.75 + Vector3(0, 0.55, 0), -nm)
-		mb.quad("concrete", o + d0 * 1.75 + Vector3(0, 0.55, 0), o + d1 * 1.75 + Vector3(0, 0.55, 0), o + d1 * 2.0 + Vector3(0, 0.55, 0), o + d0 * 2.0 + Vector3(0, 0.55, 0), Vector3.UP)
+		mb.quad("concrete_brown", o + d0 * 2.0, o + d1 * 2.0, o + d1 * 2.0 + Vector3(0, 0.55, 0), o + d0 * 2.0 + Vector3(0, 0.55, 0), nm)
+		mb.quad("concrete_brown", o + d0 * 1.75 + Vector3(0, 0.3, 0), o + d1 * 1.75 + Vector3(0, 0.3, 0), o + d1 * 1.75 + Vector3(0, 0.55, 0), o + d0 * 1.75 + Vector3(0, 0.55, 0), -nm)
+		mb.quad("concrete_brown", o + d0 * 1.75 + Vector3(0, 0.55, 0), o + d1 * 1.75 + Vector3(0, 0.55, 0), o + d1 * 2.0 + Vector3(0, 0.55, 0), o + d0 * 2.0 + Vector3(0, 0.55, 0), Vector3.UP)  # (the basin's ring in the town hall's brown concrete: note of 18 Nov)
 		mb.tri("water", o + Vector3(0, 0.4, 0), o + d0 * 1.75 + Vector3(0, 0.4, 0), o + d1 * 1.75 + Vector3(0, 0.4, 0), Vector3.UP)
 	mb.box("concrete", o + Vector3(0, 0.75, 0), Vector3.RIGHT, Vector3.UP, Vector3.BACK, Vector3(0.3, 0.75, 0.3))
 	_commit(mb, "Raadhusplassen")
