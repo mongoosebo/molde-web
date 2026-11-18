@@ -58,7 +58,13 @@ func setup(w, p) -> void:
 
 func _stream(name: String, loop := false) -> AudioStream:
 	if not _streams.has(name):
-		var s := AudioStreamOggVorbis.load_from_file(DIR + name + ".ogg")
+		# (straight from the file on the desktop; in an exported game, the web version, the file itself is not in the
+		# pack, only what the import made of it, and that is loaded as a resource)
+		var s: AudioStreamOggVorbis = null
+		if FileAccess.file_exists(DIR + name + ".ogg"):
+			s = AudioStreamOggVorbis.load_from_file(DIR + name + ".ogg")
+		elif ResourceLoader.exists(DIR + name + ".ogg"):
+			s = (load(DIR + name + ".ogg") as AudioStreamOggVorbis).duplicate()
 		if s != null:
 			s.loop = loop
 		_streams[name] = s
