@@ -27,7 +27,11 @@ var weather
 var crowd_at = null                      # a match day: where the crowd is going (scripts/molde.gd), or null
 var festival := false                    # Moldejazz: more people about, and a crowd at the stage (scripts/molde.gd)
 var people: Array = []                   # each: {node, legs, arms, kind, ...}
-var stats := {"made": 0, "walkers": 0, "waiting": 0, "sitting": 0, "standing": 0, "stepped_aside": 0}
+var stats := {"made": 0, "walkers": 0, "waiting": 0, "sitting": 0, "standing": 0, "stepped_aside": 0, "went_in": 0, "came_out": 0}
+var _shops := {}                         # 50 m cell -> [Vector2, ...]: the shops, cafés and the like that a walker may go into
+const NOT_SHOPS := ["bench", "post_box", "parking", "bicycle_parking", "toilets", "vending_machine", "recycling",
+	"charging_station", "waste_basket", "fuel", "fountain", "ferry_terminal", "sports", "kindergarten", "car",
+	"car_repair", "bus_station", "taxi", "shelter", "drinking_water", "atm", "parking_entrance", "telephone"]
 
 var _walks: Array = []                   # ways people walk along: [way, side offset]
 var _walk_cells := {}                    # 100 m cell -> indices into _walks
@@ -54,6 +58,12 @@ func setup(w, p, d, wt) -> void:
 	weather = wt
 	_rng.seed = 11
 	_cast()
+	for poi in world.meta.get("pois", []):
+		if not NOT_SHOPS.has(String(poi.get("kind", ""))):
+			var sk := Vector2i(int(floor(float(poi["x"]) / 50.0)), int(floor(float(poi["z"]) / 50.0)))
+			if not _shops.has(sk):
+				_shops[sk] = []
+			_shops[sk].append(Vector2(poi["x"], poi["z"]))
 	# where to walk: beside every road that has a sidewalk, and along the footpaths
 	for way in world.detail.ways:
 		var pts: PackedVector2Array = way[3]
@@ -294,7 +304,7 @@ func _physics_process(delta: float) -> void:
 	while i >= 0:
 		var f: Dictionary = people[i]
 		var node: Node3D = f["node"]
-		if node.global_position.distance_to(pp) > FAR + 15.0:
+		if node.global_position.distance_to(pp) > FAR + 15.0 or (f["kind"] == "sitting" and float(weather.now["rain"]) > 0.3 and node.global_position.distance_to(pp) > 30.0):
 			if f.has("spot"):
 				_taken.erase(f["spot"])
 			node.queue_free()
@@ -326,7 +336,7 @@ func _make(pp: Vector3, c: Vector2i) -> void:
 				if list != null:
 					for s in list:
 						var d: float = Vector2(_spots[s][0].x, _spots[s][0].z).distance_to(here)
-						if (d > NEAR or (_near_ok.has(s) and d > 6.0)) and d < FAR and not _taken.has(s) and (not _near_ok.has(s) or festival) and (_spots[s][2] != "sitting" or (s * 7 + 3) % 10 < 3):       # (most benches stand empty)
+						if (d > NEAR or (_near_ok.has(s) and d > 6.0)) and d < FAR and not _taken.has(s) and (not _near_ok.has(s) or festival) and (_spots[s][2] != "sitting" or ((s * 7 + 3) % 10 < (5 if float(weather.now["cover"]) < 0.4 else 3) and float(weather.now["rain"]) < 0.1 and daytime.night < 0.5)):       # (most benches stand empty)
 							options.append(s)
 		if not options.is_empty():
 			var s: int = options[_rng.randi_range(0, options.size() - 1)]
@@ -393,8 +403,11 @@ func _walk(f: Dictionary, delta: float, pp: Vector3) -> void:
 	var left := Vector2(along.y, -along.x)
 	var fwd: Vector2 = along * float(f["dir"])
 	var p: Vector2 = pts[k].lerp(pts[k + 1], t) + left * (side + f["aside"])
+	if f.has("shop") or _shop_near(f, p, delta):
+		_shop_walk(f, delta, p)
+		return
 	# the player or someone else right ahead: step to the side, and wait if there is no room
-	var speed: float = f["pace"]
+	var speed: float = f["pace"] * (1.0 + 0.45 * clampf(float(weather.now["rain"]) * 2.0, 0.0, 1.0))      # (hurrying in the rain)
 	var push := 0.0
 	var rel := Vector2(pp.x, pp.z) - p
 	if rel.dot(fwd) > -0.3 and rel.dot(fwd) < 2.2 and absf(rel.dot(left)) < 0.9 and absf(pp.y - node.position.y) < 2.0:
@@ -423,4 +436,74 @@ func _walk(f: Dictionary, delta: float, pp: Vector3) -> void:
 	# legs and arms swing with the stride
 	f["gait"] = fposmod(float(f["gait"]) + speed * delta / (1.5 * float(f["tall"])), 1.0)
 	f["moving"] = move_toward(float(f.get("moving", 1.0)), 1.0 if speed > 0.1 else 0.0, 4.0 * delta)
+	Body.pose_walk(f["body"], f["gait"], f["moving"])
+
+
+## Somewhere to go: a walker passing a shop, a café or the like now and then turns in at its wall and is gone
+## for a while, then comes out and walks on. In the rain most of them do (and those on benches are not sat
+## down in the first place). Returns true when this walker has just made up its mind to go in.
+func _shop_near(f: Dictionary, p: Vector2, delta: float) -> bool:
+	f["shop_wait"] = float(f.get("shop_wait", 0.0)) - delta
+	if f["shop_wait"] > 0.0 or delta <= 0.0:
+		return false
+	f["shop_wait"] = 1.0
+	var c := Vector2i(int(floor(p.x / 50.0)), int(floor(p.y / 50.0)))
+	for dz in [-1, 0, 1]:
+		for dx in [-1, 0, 1]:
+			for q in _shops.get(Vector2i(c.x + dx, c.y + dz), []):
+				var d: float = (q as Vector2).distance_to(p)
+				if d > 22.0 or d < 2.0 or (f.get("shops_seen", []) as Array).has(q):
+					continue
+				if not f.has("shops_seen"):
+					f["shops_seen"] = []
+				f["shops_seen"].append(q)
+				if _rng.randf() > (0.3 if float(weather.now["rain"]) < 0.2 else 0.75):
+					continue
+				# the wall it goes in at: the first thing standing between here and the shop
+				var y: float = float(f["y"]) + 1.0
+				var ray := PhysicsRayQueryParameters3D.create(Vector3(p.x, y, p.y), Vector3(q.x, y, q.y))
+				ray.exclude = [player.get_rid()]
+				var hit := get_world_3d().direct_space_state.intersect_ray(ray)
+				if hit.is_empty() or absf((hit["normal"] as Vector3).y) > 0.5:
+					continue
+				var door := Vector2(hit["position"].x, hit["position"].z)
+				if door.distance_to(p) < 1.5:
+					continue
+				f["shop"] = {"phase": "in", "door": door, "back": p, "at": p, "t": 0.0}
+				return true
+	return false
+
+
+func _shop_walk(f: Dictionary, delta: float, on_path: Vector2) -> void:
+	var sh: Dictionary = f["shop"]
+	var node: Node3D = f["node"]
+	var speed := 0.0
+	if sh["phase"] == "wait":
+		sh["t"] -= delta
+		if sh["t"] <= 0.0:
+			sh["phase"] = "out"
+			node.visible = true
+			stats["came_out"] += 1
+		return
+	var goal: Vector2 = sh["door"] if sh["phase"] == "in" else sh["back"]
+	var at: Vector2 = sh["at"]
+	var to := goal - at
+	speed = float(f["pace"])
+	if to.length() < 0.35:
+		if sh["phase"] == "in":
+			sh["phase"] = "wait"
+			sh["t"] = _rng.randf_range(8.0, 40.0)
+			node.visible = false
+			stats["went_in"] += 1
+		else:
+			f.erase("shop")
+		return
+	var fwd := to.normalized()
+	at += fwd * minf(speed * delta, to.length())
+	sh["at"] = at
+	f["y"] = lerpf(f["y"], _floor(at.x, at.y, f["y"]), minf(1.0, 10.0 * delta))
+	node.position = Vector3(at.x, f["y"], at.y)
+	node.rotation.y = lerp_angle(node.rotation.y, atan2(-fwd.x, -fwd.y), minf(1.0, 8.0 * delta))
+	f["gait"] = fposmod(float(f["gait"]) + speed * delta / (1.5 * float(f["tall"])), 1.0)
+	f["moving"] = move_toward(float(f.get("moving", 1.0)), 1.0, 4.0 * delta)
 	Body.pose_walk(f["body"], f["gait"], f["moving"])

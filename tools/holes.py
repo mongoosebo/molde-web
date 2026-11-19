@@ -287,6 +287,10 @@ def main():
     gap_here = dry & (k1 < 0) & (k2 == mine)                         # nothing right beyond, the same paving a hair further
     # (a hairline between asphalt and a sidewalk does not show: the kerb hangs over it)
     crack = step_here | gap_here
+    if "--near" in sys.argv:                                    # (say what each cracked edge near the place is)
+        _x, _z, _r = [float(v) for v in sys.argv[sys.argv.index("--near") + 1].split(",")]
+        for i in np.nonzero(crack & (np.hypot(mid[:, 0] - _x, mid[:, 1] - _z) <= _r))[0]:
+            print("  edge (%.3f, %.3f)-(%.3f, %.3f) %.2f m, kind %d, at %.3f; beyond: kind %d at %s; %s" % (a[i, 0], a[i, 1], b[i, 0], b[i, 1], ln[i], mine[i], ymid[i], k1[i], h1[i], "step" if step_here[i] else "gap"))
     for name, m in (("seam", crack & on_seam), ("crack", crack & ~on_seam)):
         add(name, [c for c in clusters(mid[m, 0], mid[m, 1], ln[m]) if c[2] >= 0.15])      # (under 15 cm long: a notch at a corner, not a slit)
     # shared edges that step

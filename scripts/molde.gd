@@ -513,31 +513,78 @@ func _match(on: bool) -> void:
 		_match_root.name = "MatchDay"
 		add_child(_match_root)
 		var y: float = float(st.get("y", world.height_at(mid.x, mid.y)))
-		for corner in [Vector2(lo.x, lo.y), Vector2(hi.x, lo.y), Vector2(lo.x, hi.y), Vector2(hi.x, hi.y)]:
-			var c: Vector2 = corner
-			var lamp := SpotLight3D.new()
-			lamp.light_energy = 28.0
-			lamp.spot_range = 190.0
-			lamp.spot_angle = 48.0
-			lamp.light_color = Color(0.92, 0.96, 1.0)
-			lamp.shadow_enabled = false
-			lamp.position = Vector3(c.x, y + 34.0, c.y)
-			_match_root.add_child(lamp)
-			lamp.look_at(Vector3(mid.x, y, mid.y))
-			var glow := MeshInstance3D.new()
+		# the lamps hang under the edge of the roof, along the two long sides of the pitch, and shine down on it
+		var pc: Array = st.get("pitch", [])
+		var corners: Array = []
+		if pc.size() >= 8:
+			for i in 4:
+				corners.append(Vector2(pc[2 * i], pc[2 * i + 1]))
+		else:
+			corners = [Vector2(lo.x, lo.y), Vector2(hi.x, lo.y), Vector2(hi.x, hi.y), Vector2(lo.x, hi.y)]
+		var centre: Vector2 = (corners[0] + corners[1] + corners[2] + corners[3]) * 0.25
+		var long_first: bool = corners[0].distance_to(corners[1]) >= corners[1].distance_to(corners[2])
+		var sides: Array = [[corners[0], corners[1]], [corners[2], corners[3]]] if long_first else [[corners[1], corners[2]], [corners[3], corners[0]]]
+		var gm := StandardMaterial3D.new()
+		gm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		gm.albedo_color = Color(1.0, 1.0, 0.95)
+		gm.emission_enabled = true
+		gm.emission = Color(1.0, 1.0, 0.95)
+		gm.emission_energy_multiplier = 2.0
+		for side in sides:
+			var a: Vector2 = side[0]
+			var b: Vector2 = side[1]
+			var out: Vector2 = ((a + b) * 0.5 - centre).normalized()
+			for f in [0.2, 0.5, 0.8]:
+				var c: Vector2 = a.lerp(b, f) + out * 7.0
+				var lamp := SpotLight3D.new()
+				lamp.light_energy = 3.5
+				lamp.spot_range = 120.0
+				lamp.spot_angle = 55.0
+				lamp.spot_attenuation = 0.6
+				lamp.light_color = Color(0.92, 0.96, 1.0)
+				lamp.shadow_enabled = false
+				lamp.position = Vector3(c.x, y + 21.0, c.y)
+				_match_root.add_child(lamp)
+				var aim: Vector2 = centre.lerp(a.lerp(b, f), 0.35)
+				lamp.look_at(Vector3(aim.x, y, aim.y))
+			var strip := MeshInstance3D.new()
 			var bm := BoxMesh.new()
-			bm.size = Vector3(7.0, 3.0, 0.6)
-			var gm := StandardMaterial3D.new()
-			gm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-			gm.albedo_color = Color(1.0, 1.0, 0.95)
-			gm.emission_enabled = true
-			gm.emission = Color(1.0, 1.0, 0.95)
-			gm.emission_energy_multiplier = 6.0
+			bm.size = Vector3(a.distance_to(b) * 0.8, 0.7, 0.5)
 			bm.material = gm
-			glow.mesh = bm
-			glow.position = lamp.position
-			_match_root.add_child(glow)
-			glow.look_at(Vector3(mid.x, y, mid.y))
+			strip.mesh = bm
+			var sm: Vector2 = (a + b) * 0.5 + out * 7.0
+			strip.position = Vector3(sm.x, y + 21.3, sm.y)
+			strip.rotation.y = -(b - a).angle()
+			_match_root.add_child(strip)
+		# and the light of it over the stands, seen from across the town
+		var dome := MeshInstance3D.new()
+		var dq := QuadMesh.new()
+		dq.size = Vector2(260.0, 120.0)
+		var dmat := StandardMaterial3D.new()
+		dmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		dmat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		dmat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+		dmat.billboard_mode = BaseMaterial3D.BILLBOARD_FIXED_Y
+		dmat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		dmat.disable_fog = true
+		dmat.albedo_color = Color(0.85, 0.92, 1.0, 0.13)
+		var dg := Gradient.new()
+		dg.set_color(0, Color(1, 1, 1, 1))
+		dg.set_color(1, Color(1, 1, 1, 0))
+		var dt := GradientTexture2D.new()
+		dt.gradient = dg
+		dt.fill = GradientTexture2D.FILL_RADIAL
+		dt.fill_from = Vector2(0.5, 0.5)
+		dt.fill_to = Vector2(0.5, 0.0)
+		dt.width = 128
+		dt.height = 64
+		dmat.albedo_texture = dt
+		dq.material = dmat
+		dome.mesh = dq
+		dome.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		dome.position = Vector3(centre.x, y + 24.0, centre.y)
+		dome.name = "Dome"
+		_match_root.add_child(dome)
 		var main_snd = get_parent().get("sound")
 		if main_snd != null:
 			var voice := AudioStreamPlayer3D.new()

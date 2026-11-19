@@ -7,6 +7,7 @@ uniform sampler2D card : filter_linear_mipmap, repeat_disable;
 global uniform float snow;
 global uniform vec3 wind;
 global uniform float wetness;
+uniform float leafy = 0.0;      // 1 for the trees that drop their leaves: bare twigs in winter
 
 void vertex() {
 	vec3 foot = MODEL_MATRIX[3].xyz;
@@ -27,6 +28,18 @@ void fragment() {
 	if (c.a < 0.5) {
 		discard;
 	}
-	ALBEDO = mix(c.rgb * (1.0 - 0.2 * wetness), vec3(0.84, 0.87, 0.92), snow * 0.40);
+	vec3 own = c.rgb;
+	float lay = snow * 0.40;
+	if (leafy > 0.5 && snow > 0.5 && c.g > c.r * 1.08 && c.g > c.b) {
+		vec2 d = UV - vec2(0.5, 0.45);
+		float a = atan(d.x, -d.y + 0.35);
+		float t1 = abs(fract(a * 2.9 + 0.10 * sin(d.y * 14.0)) - 0.5);
+		if (t1 > 0.10) {
+			discard;
+		}
+		own = vec3(0.05, 0.04, 0.035);
+		lay = snow * 0.28;
+	}
+	ALBEDO = mix(own * (1.0 - 0.2 * wetness), vec3(0.84, 0.87, 0.92), lay);
 	ROUGHNESS = 0.95;
 }

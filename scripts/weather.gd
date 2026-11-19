@@ -37,6 +37,7 @@ var now := {}                            # the values at this moment (between tw
 var wetness := 0.0                       # how wet everything is, 0 dry to 1 soaked
 var winter := false: set = set_winter    # the season (the menu): snow on the ground and the roofs, and what falls is snow
 var snow := 0.0                          # how much snow lies, 0 to 1: follows `winter` over a few seconds
+var indoors := false                     # the walker is inside a building (scripts/indoors.gd): no rain, snow or breath there
 var slippery := false                    # winter roads that are slippery to drive on (the menu; scripts/player.gd reads it)
 
 
@@ -96,7 +97,7 @@ func setup(w, p, d) -> void:
 	_puddle_mat.albedo_color = Color(0.03, 0.035, 0.04, 0.0)
 	_puddle_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	_puddle_mat.roughness = 0.03
-	_puddle_mat.specular = 0.9
+	_puddle_mat.metallic_specular = 0.9
 	_puddle_mat.metallic = 0.2
 	_apply(0.0)
 
@@ -230,6 +231,79 @@ func _run(delta: float) -> void:
 	_apply(delta)
 
 
+var _breath: CPUParticles3D
+var _breath_t := 1.0
+
+
+## Breath in the cold: a small white puff from the walker's mouth every few seconds, faster when winded.
+func _breathe(delta: float) -> void:
+	if not winter or indoors or player.driving or player.under_water or player.swimming:
+		return
+	_breath_t -= delta
+	if _breath_t > 0.0:
+		return
+	_breath_t = 1.2 if player.stamina < 0.6 else 3.4
+	if _breath == null:
+		_breath = CPUParticles3D.new()
+		_breath.one_shot = true
+		_breath.emitting = false
+		_breath.amount = 7
+		_breath.lifetime = 1.5
+		_breath.explosiveness = 0.75
+		_breath.local_coords = false
+		_breath.spread = 16.0
+		_breath.gravity = Vector3(0, 0.12, 0)
+		_breath.initial_velocity_min = 0.25
+		_breath.initial_velocity_max = 0.5
+		_breath.damping_min = 0.5
+		_breath.damping_max = 0.8
+		_breath.scale_amount_min = 0.5
+		_breath.scale_amount_max = 1.0
+		var grow := Curve.new()
+		grow.add_point(Vector2(0.0, 0.25))
+		grow.add_point(Vector2(1.0, 1.0))
+		_breath.scale_amount_curve = grow
+		var fade := Gradient.new()
+		fade.set_color(0, Color(1, 1, 1, 0.08))
+		fade.set_color(1, Color(1, 1, 1, 0.0))
+		_breath.color_ramp = fade
+		var q := QuadMesh.new()
+		q.size = Vector2(0.15, 0.15)
+		var m := StandardMaterial3D.new()
+		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		m.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+		m.vertex_color_use_as_albedo = true
+		m.albedo_texture = _puff_texture()
+		q.material = m
+		_breath.mesh = q
+		add_child(_breath)
+	var ahead := Vector3(-sin(player.rotation.y), 0.0, -cos(player.rotation.y))
+	var head: Node3D = player.get("_head")
+	var at: Vector3 = head.global_position if head != null else player.global_position + Vector3(0, 1.62, 0)
+	if head != null:
+		ahead = -head.global_transform.basis.z
+		ahead.y = 0.0
+		ahead = ahead.normalized()
+	_breath.global_position = at + ahead * 0.14 + Vector3(0, -0.04, 0)
+	_breath.direction = ahead + Vector3(0, 0.15, 0)
+	_breath.restart()
+
+
+func _puff_texture() -> Texture2D:
+	var g := Gradient.new()
+	g.set_color(0, Color(1, 1, 1, 1))
+	g.set_color(1, Color(1, 1, 1, 0))
+	var t := GradientTexture2D.new()
+	t.gradient = g
+	t.fill = GradientTexture2D.FILL_RADIAL
+	t.fill_from = Vector2(0.5, 0.5)
+	t.fill_to = Vector2(0.5, 0.0)
+	t.width = 32
+	t.height = 32
+	return t
+
+
 func _apply(delta: float) -> void:
 	var rain: float = now["rain"]
 	# wet in under a minute of heavy rain, dry again in a few
@@ -245,6 +319,7 @@ func _apply(delta: float) -> void:
 	# the season (the menu sets `winter`): the snow comes and goes over a few seconds, not at a stroke
 	snow = move_toward(snow, 1.0 if winter else 0.0, delta / 4.0)
 	RenderingServer.global_shader_parameter_set("snow", snow)
+	_breathe(delta)
 	RenderingServer.global_shader_parameter_set("wind", Vector3(wind_dir.x, wind_dir.y, wind))
 	RenderingServer.global_shader_parameter_set("cloud_down", float(now["cloud"]))
 	if daytime != null:
@@ -258,7 +333,7 @@ func _apply(delta: float) -> void:
 	# the rain itself, around the camera
 	var cam := get_viewport().get_camera_3d()
 	if cam != null and _rain != null:
-		var on := rain > 0.02
+		var on := rain > 0.02 and not indoors
 		_rain.emitting = on
 		_drops.emitting = on and not player.under_water and not winter
 		if on:

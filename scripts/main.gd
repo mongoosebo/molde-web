@@ -15,6 +15,7 @@ const Paths := preload("res://scripts/paths.gd")
 const ChecksScript := preload("res://scripts/checks.gd")
 const BusDriveScript := preload("res://scripts/bus_drive.gd")
 const JobsScript := preload("res://scripts/jobs.gd")
+const IndoorsScript := preload("res://scripts/indoors.gd")
 
 var world
 var player
@@ -32,6 +33,7 @@ var hud
 var devtool
 var bus                             # scripts/bus_drive.gd: the FRAM bus that can be driven
 var jobs                            # scripts/jobs.gd: jobs, sights, the ferry, where the player was
+var indoors                         # scripts/indoors.gd: a way into Molde Storsenter
 
 const HELI_AT := Vector2(14.0, 50.0)
 
@@ -142,6 +144,11 @@ func _ready() -> void:
 	jobs.set_script(JobsScript)
 	add_child(jobs)
 	jobs.setup(self)
+	indoors = Node.new()
+	indoors.name = "Indoors"
+	indoors.set_script(IndoorsScript)
+	add_child(indoors)
+	indoors.setup(self)
 	# back where the game was left (not in a check, which starts from the same place every time)
 	var was: Array = JobsScript.last_place()
 	if OS.get_cmdline_user_args().is_empty() and was.size() == 2:

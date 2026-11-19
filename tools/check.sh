@@ -6,7 +6,7 @@
 # A test fails if the game reports a script or shader error, says PROBLEMS or FAILED, or does not finish in time.
 # What each one printed is kept in data/check/<name>.log. Do not run this while tools/build_map.py is running.
 cd "$(dirname "$0")/.." || exit 1
-ALL="models body garage cast traffic people sound patchtest molde menu swim bike heli car jobs winter bench"
+ALL="models body garage cast traffic people sound patchtest molde menu swim bike heli car jobs winter lamps film indoors bench"
 case "$1" in
   "") TESTS="$ALL" ;;
   quick) TESTS=$(echo "$ALL" | sed 's/ bench//') ;;

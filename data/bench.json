@@ -3,212 +3,194 @@
   "route_m": 3698.0,
   "runs": {
     "12:00": {
-      "frames": 57053,
+      "frames": 52924,
       "frames_ahead_of_the_map": 0,
-      "frames_over_20ms": 1,
-      "max_ms": 23.36,
-      "mean_draw_calls": 2126,
-      "mean_ms": 4.66,
-      "median_ms": 4.64,
-      "p99_ms": 5.73,
-      "share_over_8_3ms": 0.0008,
+      "frames_over_20ms": 0,
+      "max_ms": 12.03,
+      "mean_draw_calls": 2156,
+      "mean_ms": 5.03,
+      "median_ms": 5.0,
+      "p99_ms": 6.2,
+      "share_over_8_3ms": 0.0005,
       "worst": [
         {
-          "draw_calls": 1843,
+          "draw_calls": 2116,
           "in": {
-            "cells": 7.4,
-            "grass": 2.8,
-            "traffic": 11.3
+            "cells": 9.4
           },
-          "ms": 23.36,
-          "street": "Fannestrandvegen",
-          "x": 1081.0,
-          "z": -112.0
-        },
-        {
-          "draw_calls": 2774,
-          "in": {
-            "cells": 5.7,
-            "traffic": 9.5
-          },
-          "ms": 17.37,
-          "street": "Parkvegen",
-          "x": -488.0,
-          "z": 82.0
-        },
-        {
-          "draw_calls": 2843,
-          "in": {
-            "grass": 5.8,
-            "traffic": 1.1
-          },
-          "ms": 16.86,
-          "street": "Parkvegen",
-          "x": -368.0,
-          "z": 27.0
-        },
-        {
-          "draw_calls": 2033,
-          "in": {
-            "traffic": 12.2
-          },
-          "ms": 14.81,
-          "street": "Kåre Solhjells veg",
-          "x": 334.0,
-          "z": 11.0
-        },
-        {
-          "draw_calls": 2091,
-          "in": {},
-          "ms": 11.68,
+          "ms": 12.03,
           "street": "2",
           "x": 121.0,
           "z": 51.0
         },
         {
-          "draw_calls": 2358,
+          "draw_calls": 2622,
           "in": {},
-          "ms": 11.4,
+          "ms": 11.2,
           "street": "Storgata",
           "x": 24.0,
           "z": -8.0
         },
         {
-          "draw_calls": 1714,
+          "draw_calls": 1741,
           "in": {},
-          "ms": 11.3,
+          "ms": 10.67,
           "street": "Gartnerivegen",
           "x": -229.0,
-          "z": 16.0
+          "z": 17.0
         },
         {
-          "draw_calls": 1950,
+          "draw_calls": 2890,
           "in": {},
-          "ms": 10.12,
-          "street": "Fannestrandvegen",
-          "x": 1538.0,
-          "z": -248.0
+          "ms": 10.59,
+          "street": "Myrabakken",
+          "x": -117.0,
+          "z": 29.0
         },
         {
-          "draw_calls": 1418,
+          "draw_calls": 2964,
           "in": {},
-          "ms": 9.93,
-          "street": "Fannestrandvegen",
-          "x": 2096.0,
-          "z": -246.0
-        },
-        {
-          "draw_calls": 2006,
-          "in": {},
-          "ms": 9.55,
-          "street": "Strandgata",
-          "x": 522.0,
-          "z": -24.0
-        }
-      ]
-    },
-    "23:00": {
-      "frames": 56295,
-      "frames_ahead_of_the_map": 0,
-      "frames_over_20ms": 0,
-      "max_ms": 18.56,
-      "mean_draw_calls": 1348,
-      "mean_ms": 4.73,
-      "median_ms": 4.7,
-      "p99_ms": 5.46,
-      "share_over_8_3ms": 0.0004,
-      "worst": [
-        {
-          "draw_calls": 1185,
-          "in": {
-            "traffic": 17.2
-          },
-          "ms": 18.56,
-          "street": "Fannestrandvegen",
-          "x": 1622.0,
-          "z": -246.0
-        },
-        {
-          "draw_calls": 1060,
-          "in": {
-            "cells": 7.0,
-            "traffic": 8.2
-          },
-          "ms": 16.71,
-          "street": "Fannestrandvegen",
-          "x": 2295.0,
-          "z": -279.0
-        },
-        {
-          "draw_calls": 1445,
-          "in": {
-            "grass": 2.0,
-            "traffic": 12.4
-          },
-          "ms": 16.47,
-          "street": "Strandgata",
-          "x": 545.0,
-          "z": -28.0
-        },
-        {
-          "draw_calls": 2021,
-          "in": {
-            "weather": 13.8
-          },
-          "ms": 15.94,
-          "street": "Parkvegen",
-          "x": -524.0,
-          "z": 98.0
-        },
-        {
-          "draw_calls": 1745,
-          "in": {
-            "traffic": 12.0
-          },
-          "ms": 14.64,
-          "street": "Storgata",
-          "x": 27.0,
-          "z": -9.0
-        },
-        {
-          "draw_calls": 1541,
-          "in": {},
-          "ms": 11.57,
-          "street": "2",
-          "x": 121.0,
-          "z": 51.0
-        },
-        {
-          "draw_calls": 1344,
-          "in": {},
-          "ms": 11.51,
-          "street": "Fannestrandvegen",
-          "x": 1123.0,
-          "z": -125.0
-        },
-        {
-          "draw_calls": 844,
-          "in": {},
-          "ms": 10.69,
-          "street": "Gartnerivegen",
-          "x": -229.0,
-          "z": 16.0
-        },
-        {
-          "draw_calls": 939,
-          "in": {},
-          "ms": 9.53,
+          "ms": 9.95,
           "street": "Retirovegen",
           "x": 2650.0,
           "z": -413.0
         },
         {
-          "draw_calls": 1419,
+          "draw_calls": 1610,
           "in": {},
-          "ms": 8.61,
+          "ms": 9.35,
           "street": "Fannestrandvegen",
-          "x": 937.0,
+          "x": 2113.0,
+          "z": -246.0
+        },
+        {
+          "draw_calls": 1861,
+          "in": {},
+          "ms": 9.05,
+          "street": "Fannestrandvegen",
+          "x": 1813.0,
+          "z": -245.0
+        },
+        {
+          "draw_calls": 2126,
+          "in": {},
+          "ms": 9.0,
+          "street": "Fannestrandvegen",
+          "x": 913.0,
+          "z": -49.0
+        },
+        {
+          "draw_calls": 1801,
+          "in": {},
+          "ms": 8.63,
+          "street": "Strandgata",
+          "x": 513.0,
+          "z": -22.0
+        },
+        {
+          "draw_calls": 2892,
+          "in": {},
+          "ms": 8.55,
+          "street": "Parkvegen",
+          "x": -455.0,
+          "z": 67.0
+        }
+      ]
+    },
+    "23:00": {
+      "frames": 54179,
+      "frames_ahead_of_the_map": 0,
+      "frames_over_20ms": 1,
+      "max_ms": 23.07,
+      "mean_draw_calls": 1358,
+      "mean_ms": 4.91,
+      "median_ms": 4.86,
+      "p99_ms": 5.9,
+      "share_over_8_3ms": 0.0003,
+      "worst": [
+        {
+          "draw_calls": 1160,
+          "in": {
+            "traffic": 21.4
+          },
+          "ms": 23.07,
+          "street": "Fannestrandvegen",
+          "x": 2589.0,
+          "z": -319.0
+        },
+        {
+          "draw_calls": 1529,
+          "in": {
+            "cells": 10.3
+          },
+          "ms": 12.57,
+          "street": "2",
+          "x": 121.0,
+          "z": 51.0
+        },
+        {
+          "draw_calls": 936,
+          "in": {},
+          "ms": 11.74,
+          "street": "Gartnerivegen",
+          "x": -229.0,
+          "z": 16.0
+        },
+        {
+          "draw_calls": 1700,
+          "in": {},
+          "ms": 10.39,
+          "street": "Storgata",
+          "x": 25.0,
+          "z": -8.0
+        },
+        {
+          "draw_calls": 915,
+          "in": {},
+          "ms": 9.8,
+          "street": "Retirovegen",
+          "x": 2650.0,
+          "z": -413.0
+        },
+        {
+          "draw_calls": 1463,
+          "in": {},
+          "ms": 9.1,
+          "street": "Fannestrandvegen",
+          "x": 737.0,
+          "z": -49.0
+        },
+        {
+          "draw_calls": 1893,
+          "in": {},
+          "ms": 9.04,
+          "street": "Myrabakken",
+          "x": -171.0,
+          "z": 56.0
+        },
+        {
+          "draw_calls": 1415,
+          "in": {},
+          "ms": 8.84,
+          "street": "Fannestrandvegen",
+          "x": 938.0,
           "z": -50.0
+        },
+        {
+          "draw_calls": 1508,
+          "in": {},
+          "ms": 8.39,
+          "street": "Myrabakken",
+          "x": -75.0,
+          "z": 19.0
+        },
+        {
+          "draw_calls": 1103,
+          "in": {},
+          "ms": 8.36,
+          "street": "Fannestrandvegen",
+          "x": 1813.0,
+          "z": -245.0
         }
       ]
     }

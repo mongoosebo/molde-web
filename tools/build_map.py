@@ -1620,6 +1620,13 @@ if os.path.exists(_ppath):
                 _runs[-1][1].append(_sq)
             else:
                 _runs.append((_q["kind"], [_sq]))
+    # where cars drive: marked paving is kept off it (the filling-in and rounding spilled it over the kerb, and the
+    # road check counted sidewalk on the carriageway), except where the squares themselves were laid across the
+    # middle of a road, which is plainly meant
+    _cw = [w for w in road_ways if w[0] == 0 and w[6] and len(w[5]) >= 2 and id(w[5]) not in pedestrian_ids]
+    _carr = unary_union([LineString(w[5]).buffer(max(w[1] - 0.2, 0.5), cap_style="flat") for w in _cw])
+    _mid = unary_union([LineString(w[5]) for w in _cw])
+    _kept_off = 0.0
     for _kind, _sqs in _runs:
         _u = unary_union(_sqs)
         if _kind == "gravel":                             # bare gravel: nothing laid, the ground itself coloured as a gravel road is
@@ -1636,10 +1643,15 @@ if os.path.exists(_ppath):
                              for g in getattr(_full, "geoms", [_full]) if g.geom_type == "Polygon"])
         _full = _full.buffer(-1.2, quad_segs=4).buffer(1.2, quad_segs=4).intersection(_near)
         _full = unary_union([_full, _u.buffer(-0.6).buffer(0.3)])           # (a single small square is not rounded away)
+        if _kind == "paving" and _full.intersects(_carr):
+            _across = [g for g in getattr(_u.intersection(_carr), "geoms", [_u.intersection(_carr)]) if g.geom_type == "Polygon" and g.intersects(_mid)]
+            _was = _full.area
+            _full = unary_union([_full.difference(_carr)] + [g.buffer(0.3) for g in _across])
+            _kept_off += _was - _full.area
         _patches.append((_kind, _full))
         if _kind == "asphalt":
             _marked.append(_full)
-    print("  marked with the tool: %d runs of squares, %d m2 of asphalt" % (len(_runs), sum(g.area for g in _marked)))
+    print("  marked with the tool: %d runs of squares, %d m2 of asphalt; marked paving kept off the carriageway: %d m2" % (len(_runs), sum(g.area for g in _marked), _kept_off))
 for _kind, _shape in _patches:
     if _kind == "island":
         # (the piece of paving the point lies on, as far as 16 m from it)

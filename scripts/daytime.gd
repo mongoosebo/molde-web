@@ -171,6 +171,12 @@ func _run(delta: float) -> void:
 	if _lights_tick <= 0.0:
 		_lights_tick = 0.1
 		_place_lights()
+	# each lamp's light goes toward what it should be over a third of a second, every frame: set ten times a
+	# second in steps, it could be seen stepping (./run.sh -- --lamps counted jumps of over a fifth)
+	for k in _light_goal:
+		var l: OmniLight3D = _lights[k]
+		l.light_energy = move_toward(l.light_energy, float(_light_goal[k]), delta * 6.6)
+		l.visible = l.light_energy > 0.01
 	_headlights()
 
 
@@ -293,9 +299,13 @@ func apply() -> void:
 
 
 ## Real light from the lamps nearest the player (only so many, to stay cheap).
+var _light_goal := {}          # light -> the strength it is on its way to
+
+
 func _place_lights() -> void:
 	var on := night > 0.3
 	if not on:
+		_light_goal.clear()
 		for l in _lights:
 			l.visible = false
 		for lamp in _light_of.keys():
@@ -310,13 +320,16 @@ func _place_lights() -> void:
 			var list = _lamp_cells.get(Vector2i(c.x + dx, c.y + dz))
 			if list != null:
 				for i in list:
-					near.append([_lamp_at[i].distance_squared_to(pos), i])
+					# (only those within 100 m: nearer than that the nine cells hold every lamp there is, so the
+					# set does not change at a stroke when the player crosses into another cell)
+					if _lamp_at[i].distance_squared_to(pos) < 10000.0:
+						near.append([_lamp_at[i].distance_squared_to(pos), i])
 	near.sort_custom(func(p, q): return p[0] < q[0])
 	var e := 2.2 * smoothstep(0.3, 0.7, night)
 	# Each lamp keeps the light it has for as long as it is among the nearest (a light that hopped from lamp to
 	# lamp as the order changed, and lamps coming into reach at full strength, made the lights flicker when
 	# driving: note of 18 Nov). A lamp's light comes up as it comes nearer than the farthest one that is lit.
-	var edge: float = sqrt(near[mini(near.size(), _lights.size()) - 1][0]) if not near.is_empty() else 1.0
+	var edge: float = sqrt(near[_lights.size() - 1][0]) if near.size() >= _lights.size() else 100.0
 	var wanted := {}
 	for k in mini(near.size(), _lights.size()):
 		wanted[near[k][1]] = sqrt(near[k][0])
@@ -324,6 +337,7 @@ func _place_lights() -> void:
 		if not wanted.has(lamp):
 			_free_lights.append(_light_of[lamp])
 			(_lights[_light_of[lamp]] as OmniLight3D).visible = false
+			_light_goal.erase(_light_of[lamp])
 			_light_of.erase(lamp)
 	for lamp in wanted:
 		if not _light_of.has(lamp):
@@ -331,9 +345,8 @@ func _place_lights() -> void:
 				continue
 			_light_of[lamp] = _free_lights.pop_back()
 			(_lights[_light_of[lamp]] as OmniLight3D).global_position = _lamp_at[lamp] - Vector3(0, 0.25, 0)
-		var l: OmniLight3D = _lights[_light_of[lamp]]
-		l.light_energy = e * (1.0 - smoothstep(edge * 0.72, edge * 0.98, float(wanted[lamp])))
-		l.visible = l.light_energy > 0.01
+			(_lights[_light_of[lamp]] as OmniLight3D).light_energy = 0.0
+		_light_goal[_light_of[lamp]] = e * (1.0 - smoothstep(edge * 0.72, edge * 0.98, float(wanted[lamp])))
 
 
 ## Two beams ahead of the vehicle being driven, at dusk and at night.

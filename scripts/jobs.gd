@@ -176,7 +176,11 @@ func _make_jobs() -> void:
 				j["marks"] = [Vector2(-1640.0, -1185.0), j["at"]]
 				j["names"] = ["Vardestua", "Træffhuset"]
 			"heli":
-				j["marks"] = [Vector2(-486.0, 462.0)]
+				var pc: Array = world.meta.get("stadium", {}).get("pitch", [])
+				var mid := Vector2(-560.0, 455.0)
+				if pc.size() >= 8:
+					mid = (Vector2(pc[0], pc[1]) + Vector2(pc[2], pc[3]) + Vector2(pc[4], pc[5]) + Vector2(pc[6], pc[7])) * 0.25
+				j["marks"] = [mid]
 				j["names"] = ["Aker Stadion"]
 				j["land"] = true
 			"swim":
@@ -564,7 +568,7 @@ func _run_job(delta: float) -> void:
 			_clock.text = _mmss(active["t"]) + (("   ·   best " + _mmss(float(best[j["id"]]))) if best.has(j["id"]) else "")
 			var reached := d < 20.0
 			if j.has("land") and i == marks.size() - 1:
-				reached = d < 75.0 and speed < 0.4 and absf(player.velocity.y) < 0.2 and float(active["t"]) > 5.0
+				reached = d < 45.0 and speed < 0.4 and absf(player.velocity.y) < 0.2 and float(active["t"]) > 5.0
 			if reached:
 				active["step"] += 1
 				_ding("tick")

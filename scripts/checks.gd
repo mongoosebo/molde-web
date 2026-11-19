@@ -2,7 +2,7 @@ extends Node
 ## Checks that run the game by themselves and quit (`./run.sh -- --bench` and so on). The older ones are in
 ## main.gd; the ones added with the plan of 18 November are here. tools/check.sh runs them all in turn.
 
-const KNOWN := ["--bench", "--jobs", "--winter"]
+const KNOWN := ["--bench", "--jobs", "--winter", "--lamps", "--film", "--indoors"]
 
 var m                               # main.gd
 
@@ -17,6 +17,12 @@ func run(main, what: String) -> void:
 			await _jobs()
 		"--winter":
 			await _winter()
+		"--lamps":
+			await _lamps()
+		"--film":
+			await _film()
+		"--indoors":
+			await _indoors()
 	get_tree().quit()
 
 
@@ -193,15 +199,17 @@ func _jobs() -> void:
 	# a taxi shift: into the Volvo, to the rank, three fares
 	var car: Node3D = player.vehicles[1]
 	for j in jobs.jobs:
-		if j["id"] != "taxi" and j["id"] != "bus" and j["id"] != "varden":
-			continue
-		var veh: Node3D = car if j["id"] == "taxi" else (m.bus if j["id"] == "bus" else player.vehicles[5])
+		var veh: Node3D = null
+		for v in player.vehicles:
+			if (j["needs"] as Array).has(str(v.LABEL)) and (veh == null or v == car):
+				veh = v
 		if player.driving:
 			player._toggle_atv(true)
-		await _go(Vector2(veh.global_position.x, veh.global_position.z) + Vector2(1.5, 0))
-		player.global_position = veh.global_position + Vector3(0.8, 0.3, 0)
-		player._toggle_atv()
-		await _frames(5)
+		if veh != null:
+			await _go(Vector2(veh.global_position.x, veh.global_position.z) + Vector2(1.5, 0))
+			player.global_position = veh.global_position + Vector3(0.8, 0.3, 0)
+			player._toggle_atv()
+			await _frames(5)
 		if j["id"] != "bus":
 			await _go(j["at"], 0.3)
 		await _frames(10)
@@ -307,6 +315,16 @@ func _winter() -> void:
 		await get_tree().process_frame
 	print("WINTER match day: lights ", m.molde._match_root != null, "  crowd going to ", m.people.crowd_at)
 	await _shot("winter_4_match.png")
+	await _go(Vector2(-560.0, 455.0))
+	player.yaw = PI * 0.5
+	player.pitch = 0.25
+	await _frames(30)
+	await _shot("winter_5_pitch.png")
+	await _go(Vector2(-150.0, 250.0))
+	player.yaw = PI * 0.5
+	player.pitch = 0.1
+	await _frames(30)
+	await _shot("winter_6_afar.png")
 	m.weather.winter = false
 	m.daytime.hours = 13.0
 	m.daytime.apply()
@@ -323,3 +341,252 @@ func _winter() -> void:
 		player._toggle_atv(true)
 		await _frames(5)
 	print("WINTER OK")
+
+
+## `--lamps`: do the street lamps flicker at night? The camera goes along the bench route at 23:00 at 50 km/h
+## in even steps, and after every frame each lit lamp's strength is read (scripts/daytime.gd gives the nearest
+## lamps a light each). A lamp flickers if its light jumps by more than a fifth of full strength from one
+## frame to the next, or goes out and comes back within a second. (Comparing pictures was tried first: the
+## camera's own small movements drowned everything else.)
+func _lamps() -> void:
+	var world = m.world
+	var player = m.player
+	var day = m.daytime
+	player.set_process_unhandled_input(false)
+	player.set_physics_process(false)
+	day.hours = 23.0
+	day.rate = 0.0
+	day.apply()
+	var route := PackedVector2Array()
+	var stops := [Vector2(-560, 60), Vector2(-8, -30), Vector2(120, 35)]
+	for k in stops.size() - 1:
+		route.append_array(m.traffic.route_points(stops[k], stops[k + 1]))
+	if route.size() < 10:
+		print("LAMPS FAILED: no route")
+		return
+	var p0 := route[0]
+	player.global_position = Vector3(p0.x, world.height_at(p0.x, p0.y) + 0.6, p0.y)
+	world.update_streaming(player.global_position)
+	world.flush(player.global_position)
+	await _frames(120)
+	var full: float = 2.2
+	var was := {}                  # lamp -> strength last frame
+	var went_out := {}             # lamp -> frame it went out
+	var jumps := 0
+	var blinks := 0
+	var worst := 0.0
+	var worst_at := Vector2.ZERO
+	var most_lit := 0
+	var i := 0
+	var along := 0.0
+	var n := 0
+	while i < route.size() - 1:
+		along += 13.9 / 144.0
+		while i < route.size() - 1 and along > route[i].distance_to(route[i + 1]):
+			along -= route[i].distance_to(route[i + 1])
+			i += 1
+		if i >= route.size() - 1:
+			break
+		var seg := route[i + 1] - route[i]
+		var q := route[i] + seg.normalized() * along
+		if Vector2(player.global_position.x, player.global_position.z).distance_to(q) > 1.0:
+			went_out.clear()                               # (where two legs of the route meet the camera is moved: not a blink)
+		player.global_position = Vector3(q.x, world.height_at(q.x, q.y) + 0.6, q.y)
+		world.update_streaming(player.global_position)
+		await get_tree().process_frame
+		n += 1
+		var now := {}
+		for lamp in day._light_of:
+			var l: OmniLight3D = day._lights[day._light_of[lamp]]
+			now[lamp] = l.light_energy if l.visible else 0.0
+		most_lit = maxi(most_lit, now.size())
+		for lamp in now:
+			var before: float = was.get(lamp, 0.0)
+			var d: float = absf(float(now[lamp]) - before)
+			if d > worst and n > 150:
+				worst = d
+				worst_at = q
+			if d > 0.2 * full and n > 150:               # (not the first second, when they all come on)
+				jumps += 1
+			# (out and back at the very edge of reach, where it is too faint to see, is not a blink)
+			if float(now[lamp]) > 0.1 * full and went_out.has(lamp) and n - int(went_out[lamp]) < 40:      # (within a quarter of a second: slower is a fade, as when turning round)
+				blinks += 1
+				print("LAMPS blink: lamp ", lamp, " at ", day._lamp_at[lamp], " camera ", q, " ", snappedf(q.distance_to(Vector2(day._lamp_at[lamp].x, day._lamp_at[lamp].z)), 0.1), " m off, out for ", n - int(went_out[lamp]), " frames; route point ", i, " of ", route.size(), ", step to next ", snappedf(route[i].distance_to(route[i + 1]), 0.1))
+				went_out.erase(lamp)
+		for lamp in was:
+			if float(was[lamp]) > 0.01 and float(now.get(lamp, 0.0)) <= 0.01:
+				went_out[lamp] = n
+				if float(was[lamp]) > 0.2 * full:
+					jumps += 1                                 # (put out at a stroke)
+					if float(was[lamp]) > worst:
+						worst = float(was[lamp])
+						worst_at = q
+		was = now
+	print("LAMPS %d frames over %d m at 23:00, up to %d lamps lit: jumps of over a fifth in one frame: %d; out and on again within a quarter of a second: %d; the largest change in one frame %.0f %% of full, at %.0f %.0f (%s)" % [n, int(n * 13.9 / 144.0), most_lit, jumps, blinks, 100.0 * worst / full, worst_at.x, worst_at.y, world.locate(worst_at.x, worst_at.y)["street"]])
+	print("LAMPS ", "OK" if jumps == 0 and blinks == 0 else "PROBLEMS: the lamps flicker")
+
+
+## `--film`: movement seen moving. Three short strips of pictures a tenth of a second apart, each put side by
+## side in one file: the player's breaststroke and crawl from the side (data/film_breast.png, film_crawl.png),
+## and a townsperson walking past (data/film_walker.png).
+func _film() -> void:
+	var player = m.player
+	var world = m.world
+	m.daytime.hours = 13.0
+	m.daytime.rate = 0.0
+	m.daytime.apply()
+	# the fjord off the shore by the stadium: deep water
+	var at := Vector2(-640.0, 600.0)
+	for k in 100:
+		var wa: Dictionary = world.water_at(at.x, at.y)
+		if not wa.is_empty() and float(wa["depth"]) > 2.5:
+			break
+		at.y += 6.0
+	player.global_position = Vector3(at.x, 0.0, at.y)
+	world.update_streaming(player.global_position)
+	world.flush(player.global_position)
+	await _frames(60)
+	for stroke in ["breast", "crawl"]:
+		player.stamina = 1.0
+		player.yaw = 0.0                                  # swimming north-south, the camera looking from the side
+		Input.action_press("move_forward")
+		if stroke == "crawl":
+			Input.action_press("sprint")
+		for k in 90:
+			await get_tree().physics_frame
+		var strip: Array = []
+		for shot in 8:
+			for k in 6:
+				await get_tree().physics_frame
+			var cam: Camera3D = get_viewport().get_camera_3d()
+			# (the picture is taken by a camera of our own from the side, 4 m off)
+			var side := Camera3D.new()
+			add_child(side)
+			var pp: Vector3 = player.global_position
+			side.global_position = pp + Vector3(4.0, 0.9, 0.0)
+			side.look_at(pp + Vector3(0, 0.1, 0))
+			side.fov = 40.0
+			side.current = true
+			await RenderingServer.frame_post_draw
+			await RenderingServer.frame_post_draw
+			strip.append(get_viewport().get_texture().get_image())
+			cam.current = true
+			side.queue_free()
+		Input.action_release("move_forward")
+		Input.action_release("sprint")
+		_strip(strip, "film_%s.png" % stroke)
+		print("FILM %s: swimming %s, crawling %s, 8 pictures" % [stroke, player.swimming, player.crawling])
+	# a townsperson walking: the first walker found in the centre
+	await _go(Vector2(40.0, -15.0))
+	var who = null
+	for tries in 900:
+		await get_tree().physics_frame
+		for f in m.people.people:
+			if f["kind"] == "walker" and not f.has("shop") and (f["node"] as Node3D).global_position.distance_to(player.global_position) < 45.0:
+				who = f
+		if who != null:
+			break
+	if who == null:
+		print("FILM no walker came by")
+		return
+	var strip2: Array = []
+	for shot in 8:
+		for k in 6:
+			await get_tree().physics_frame
+		var node: Node3D = who["node"]
+		if not is_instance_valid(node):
+			break
+		var cam2: Camera3D = get_viewport().get_camera_3d()
+		var side2 := Camera3D.new()
+		add_child(side2)
+		var right: Vector3 = node.global_transform.basis.x.normalized()
+		side2.global_position = node.global_position + right * 3.6 + Vector3(0, 1.0, 0)
+		side2.look_at(node.global_position + Vector3(0, 0.9, 0))
+		side2.fov = 40.0
+		side2.current = true
+		await RenderingServer.frame_post_draw
+		await RenderingServer.frame_post_draw
+		strip2.append(get_viewport().get_texture().get_image())
+		cam2.current = true
+		side2.queue_free()
+	_strip(strip2, "film_walker.png")
+	print("FILM walker: ", strip2.size(), " pictures")
+
+
+func _strip(pics: Array, name: String) -> void:
+	if pics.is_empty():
+		return
+	var w := 300
+	var h := 300
+	var out := Image.create(w * pics.size(), h, false, Image.FORMAT_RGB8)
+	for k in pics.size():
+		var im: Image = pics[k]
+		im.convert(Image.FORMAT_RGB8)
+		var s := mini(im.get_width(), im.get_height())
+		var cut := im.get_region(Rect2i((im.get_width() - s) / 2, (im.get_height() - s) / 2, s, s))
+		cut.resize(w, h, Image.INTERPOLATE_BILINEAR)
+		out.blit_rect(cut, Rect2i(0, 0, w, h), Vector2i(k * w, 0))
+	out.save_png("res://data/" + name)
+
+
+## `--indoors`: the way into Molde Storsenter (scripts/indoors.gd). Walks the player at the building from four
+## sides until a wall is met, says whether the way in is offered there, goes in, takes pictures down the hall
+## and back toward the way out (data/indoors_*.png), walks to the way out and leaves; says where the player
+## came out.
+func _indoors() -> void:
+	var player = m.player
+	var ind = m.indoors
+	if ind.places.is_empty():
+		print("INDOORS FAILED: no place with a way in")
+		return
+	var place: Dictionary = ind.places[0]
+	var at: Vector2 = place["at"]
+	print("INDOORS ", place["name"], " at ", at, ", shops: ", place["shops"])
+	var offered := 0
+	var from_where := Vector3.ZERO
+	for a in [0.0, PI * 0.5, PI, PI * 1.5]:
+		var dir := Vector2(cos(a), sin(a))
+		await _go(at + dir * 110.0)
+		var met := false
+		for step in 1500:
+			var pp: Vector3 = player.global_position
+			var to := (at - Vector2(pp.x, pp.z)).normalized()
+			player.velocity = Vector3(to.x * 4.0, player.velocity.y, to.y * 4.0)
+			player.yaw = atan2(-to.x, -to.y)
+			await get_tree().physics_frame
+			if ind._at_door() >= 0:
+				met = true
+				break
+		player.velocity = Vector3.ZERO
+		for w in 40:
+			await get_tree().physics_frame
+		await _frames(3)
+		var d := Vector2(player.global_position.x, player.global_position.z).distance_to(at)
+		print("INDOORS from %3d degrees: wall met %s, %.0f m from the middle, way in offered: %s; walls known: %d" % [int(rad_to_deg(a)), met, d, ind._prompt.visible, (place.get("walls", []) as Array).size()])
+		if ind._prompt.visible:
+			offered += 1
+			from_where = player.global_position
+			if offered == 1:
+				await _shot("indoors_0_door.png")
+	if offered == 0:
+		print("INDOORS FAILED: the way in was offered from no side")
+		return
+	ind.enter(0)
+	await _frames(40)
+	print("INDOORS inside: ", ind.inside, ", on the floor: ", player.is_on_floor(), ", at ", player.global_position)
+	await _shot("indoors_1_hall.png")
+	var room: Vector3 = ind._room.global_position
+	player.global_position = room + Vector3(8.0, 0.3, 2.0)
+	player.yaw = PI * 0.5
+	player.reset_physics_interpolation()
+	await _frames(40)
+	await _shot("indoors_2_back.png")
+	var fell: bool = player.global_position.y < room.y - 0.5
+	player.global_position = room + Vector3(-ind.HALL.x * 0.5 + 2.0, 0.3, 0.0)
+	await _frames(40)
+	print("INDOORS at the way out: offered ", ind._prompt.visible, " '", ind._prompt.text, "'")
+	var ok_out: bool = ind._prompt.visible
+	ind.leave()
+	await _frames(20)
+	print("INDOORS out again at ", player.global_position, ", ", snappedf(player.global_position.distance_to(from_where), 0.1), " m from where they went in")
+	print("INDOORS ", "OK" if not fell and ok_out and not ind.inside else "PROBLEMS")

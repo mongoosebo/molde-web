@@ -858,6 +858,7 @@ func _tree_cards(meshes: Array) -> Array:
 		var mat := ShaderMaterial.new()
 		mat.shader = load("res://shaders/tree_card.gdshader")
 		mat.set_shader_parameter("card", ImageTexture.create_from_image(img))
+		mat.set_shader_parameter("leafy", 1.0 if out.size() in [1, 3, 4] else 0.0)
 		out.append([mat, Vector2(wide, tall)])
 	vp.queue_free()
 	return out
@@ -937,6 +938,8 @@ func _build_trees() -> void:
 	add_child(root)
 	var sway := ShaderMaterial.new()                   # trees move in the wind (shaders/tree.gdshader)
 	sway.shader = load("res://shaders/tree.gdshader")
+	var sway_leafy := sway.duplicate() as ShaderMaterial   # birch, rowan and the round broadleaf: bare in winter
+	sway_leafy.set_shader_parameter("leafy", 1.0)
 	for key in groups:
 		var ids: PackedInt32Array = groups[key]
 		var mm := MultiMesh.new()
@@ -955,7 +958,7 @@ func _build_trees() -> void:
 		var mmi := MultiMeshInstance3D.new()
 		mmi.multimesh = mm
 		mmi.position = origin
-		mmi.material_override = sway
+		mmi.material_override = sway_leafy if key.z in [1, 3, 4] else sway
 		mmi.visibility_range_end = TREE_NEAR
 		mmi.visibility_range_end_margin = 30.0
 		root.add_child(mmi)
