@@ -1766,6 +1766,14 @@ print("  gravel paths cut at the edge of paving:", _n_cut, " paved path ribbons 
 # Hairline slits: where two paved outlines pass within a few centimetres of each other without touching (or
 # touch without being joined), the ground would show as a thin line between them. The paving is closed over
 # them, and what that adds is asphalt.
+# (first the sidewalk against itself: two pieces of it a millimetre apart left an edge that matched nothing,
+# and tools/holes.py found a 2 cm step along it, 19 Nov)
+_s0 = side.area
+side = side.buffer(0.03, join_style=2).buffer(-0.03, join_style=2).difference(bld_union.buffer(0.05)).intersection(map_box)
+if road_decks:
+    side = side.difference(_deck_area)
+side = unary_union([g for g in shapely.get_parts(side) if g.geom_type == "Polygon" and g.area > 1e-6])
+print("  hairline slits within the sidewalk closed: %.1f m2 added" % (side.area - _s0))
 _u = shapely.union_all([road_laid, side])
 _a0 = road_laid.area
 road_laid = _u.buffer(0.05, join_style=2).buffer(-0.05, join_style=2).difference(side).difference(bld_union.buffer(0.05)).intersection(map_box)
