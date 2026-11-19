@@ -5,6 +5,7 @@ render_mode cull_disabled;
 // UV = (metres along the wall, metres above the uphill ground)
 // UV2.x = 1 for roofs and debris, UV2.y = 1 if the building has windows
 uniform sampler2D noise_tex : filter_linear_mipmap, repeat_enable;
+global uniform float snow;
 global uniform float wetness;            // 0 dry to 1 soaked (scripts/weather.gd)
 global uniform float night;              // 0 by day, 1 in the dark (scripts/daytime.gd)
 global uniform float lit_share;          // how many of the windows are lit: few by day, most in the evening
@@ -71,6 +72,8 @@ void fragment() {
 	float wet = wetness * mix(0.45, 1.0, step(0.5, UV2.x));
 	col *= 1.0 - 0.3 * wet;
 	rough = mix(rough, min(rough, 0.4), wet);
+	// winter: snow lies on the roofs, a little thinner in patches
+	col = mix(col, vec3(0.84, 0.87, 0.92), snow * step(0.5, UV2.x) * (0.80 + 0.18 * smoothstep(0.3, 0.6, n1)));
 	ALBEDO = col;
 	ROUGHNESS = rough;
 	EMISSION = emi;

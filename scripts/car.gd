@@ -298,6 +298,11 @@ func chassis_xf() -> Transform3D:
 	return _chassis.transform
 
 
+## Where the driver's eyes are (the view from the seat, Q).
+func eye() -> Vector3:
+	return _chassis.transform * Vector3(-0.36, 1.17, SCREENS[0].x - 0.10)      # (just outside the glass: the cabin has no inside)
+
+
 ## The steering wheel and the pedals, for a rider who is shown (this one is not: the driver sits inside).
 func grip(side: float) -> Vector3:
 	return _chassis.transform * Vector3(-0.38 + 0.16 * side, 1.02, -0.45)

@@ -4,6 +4,7 @@ render_mode world_vertex_coords;
 // A tree in the wind (scripts/weather.gd sets `wind`: the way it blows, and how hard from 0 to 1). The trunk
 // barely moves, the crown more, the leaves flutter; each tree is out of step with its neighbours. Nothing moves
 // when it is calm. The colour is the mesh's own.
+global uniform float snow;
 global uniform vec3 wind;
 global uniform float wetness;
 
@@ -18,6 +19,6 @@ void vertex() {
 }
 
 void fragment() {
-	ALBEDO = pow(COLOR.rgb, vec3(2.2)) * (1.0 - 0.2 * wetness);
+	ALBEDO = mix(pow(COLOR.rgb, vec3(2.2)) * (1.0 - 0.2 * wetness), vec3(0.84, 0.87, 0.92), snow * 0.45);
 	ROUGHNESS = 0.95;
 }

@@ -530,6 +530,26 @@ static func _show(parent: Node3D, part: Dictionary, far_part, mats: Dictionary, 
 
 
 ## Build the parts a spec needs, without making a figure (so that the first figure of a shape does not hold up a frame).
+## The same a piece at a time, so that no one frame waits for a whole figure: step 0, 1, 2… until it returns
+## true. (Sixteen pieces; the first figure's take a few milliseconds each, later ones mostly share them.)
+static func prepare_step(spec: Dictionary, step: int) -> bool:
+	var ds := [float(spec.get("detail", 1.0)), float(spec.get("far", 0.0))]
+	if step >= 16:
+		return true
+	var d: float = ds[step / 8]
+	if d > 0.0:
+		match step % 8:
+			0: _thigh(d)
+			1: _shin(d)
+			2: _boot(d)
+			3: _upper_arm(d)
+			4: _forearm(d, -1.0)
+			5: _forearm(d, 1.0)
+			6: _torso(d, spec.get("sex", "m"), spec.get("build", 1), spec.get("vest", false))
+			7: _head(d, spec.get("sex", "m"), spec.get("hair", "short"), spec.get("helmet", false))
+	return step >= 15
+
+
 static func prepare(spec: Dictionary) -> void:
 	for d in [float(spec.get("detail", 1.0)), float(spec.get("far", 0.0))]:
 		if d <= 0.0:

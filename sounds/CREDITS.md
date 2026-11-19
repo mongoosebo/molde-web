@@ -50,3 +50,9 @@ anywhere, so there is no licence to follow. They are part of this project, like 
 | `roll.ogg` | tyres rolling on a road (loop) | low noise |
 | `thump.ogg` | a vehicle landing | a low falling tone and a knock |
 | `door.ogg` | a car door | a click, then a thud |
+| `engine_bus.ogg` | the bus's diesel (loop) | six cylinders, slow and dark |
+| `horn.ogg` | a car's horn | two tones a third apart with their octaves |
+| `ship_horn.ogg` | the ferry's horn | a low chord held for two seconds |
+| `chime.ogg` | a job done, or a sight found | three bell tones going up |
+| `tick.ogg` | a goal reached on the way | one short bell tone |
+| `crowd.ogg` | a crowd at a match or a concert, from a way off (loop) | voice-band noise swelling and falling |

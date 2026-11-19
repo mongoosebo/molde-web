@@ -151,6 +151,13 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _process(delta: float) -> void:
+	var t0_ := Time.get_ticks_usec()
+	_run(delta)
+	if world != null:
+		world.took("daytime", t0_)
+
+
+func _run(delta: float) -> void:
 	hours += delta * rate * 24.0 / DAY_SECONDS
 	if hours >= 24.0:
 		hours -= 24.0

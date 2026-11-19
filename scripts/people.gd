@@ -24,6 +24,7 @@ var world
 var player
 var daytime
 var weather
+var crowd_at = null                      # a match day: where the crowd is going (scripts/molde.gd), or null
 var festival := false                    # Moldejazz: more people about, and a crowd at the stage (scripts/molde.gd)
 var people: Array = []                   # each: {node, legs, arms, kind, ...}
 var stats := {"made": 0, "walkers": 0, "waiting": 0, "sitting": 0, "standing": 0, "stepped_aside": 0}
@@ -43,6 +44,7 @@ var _workers: Array = []                 # those standing at their work: {"body"
 var _unready: Array = []                 # characters whose parts are not built yet (one is built each step)
 var _ready_chars: Array = []
 var _next_char := 0
+var _prep_step := 0
 
 
 func setup(w, p, d, wt) -> void:
@@ -168,6 +170,7 @@ func _cast() -> void:
 			"helmet": [Color(0.95, 0.80, 0.10), Color(0.93, 0.93, 0.91), Color(0.92, 0.45, 0.10)][i], "metal": Color(0.55, 0.56, 0.58)}
 		var spec2 := {"sex": "f" if i == 1 else "m", "build": [1, 1, 2][i], "hair": "tail" if i == 1 else "short", "helmet": true, "vest": true, "detail": DETAIL, "far": FAR_DETAIL, "lod": 12.0 if OS.has_feature("web") else 28.0}
 		_worker_kinds.append({"spec": spec2, "mats": Body.materials(own2), "tall": [1.0, 0.90, 0.97][i], "sex": spec2["sex"]})
+		_unready.append(_worker_kinds[i])
 
 
 func _figure(who: Dictionary = {}) -> Dictionary:
@@ -182,6 +185,21 @@ func _figure(who: Dictionary = {}) -> Dictionary:
 		"pace": _rng.randf_range(1.15, 1.6) * (0.94 if who["sex"] == "f" else 1.0), "tall": float(who["tall"])}
 
 
+## A bus has pulled in at a stop: those waiting there get on (they are gone when it leaves).
+func bus_called(at: Vector2) -> void:
+	var i := people.size() - 1
+	while i >= 0:
+		var f: Dictionary = people[i]
+		var p: Vector3 = (f["node"] as Node3D).position
+		if f["kind"] == "waiting" and Vector2(p.x, p.z).distance_to(at) < 16.0:
+			if f.has("spot"):
+				_taken.erase(f["spot"])
+			(f["node"] as Node3D).queue_free()
+			people.remove_at(i)
+			stats["boarded"] = int(stats.get("boarded", 0)) + 1
+		i -= 1
+
+
 ## Somebody at work on a building site, in a yellow vest and a helmet: stays where they are put.
 func add_worker(at: Vector3, face: float, job: int) -> void:
 	_workers.append({"at": at, "face": face, "job": job, "who": _worker_kinds[_workers.size() % _worker_kinds.size()], "phase": _rng.randf() * TAU})
@@ -191,9 +209,8 @@ func _work(delta: float, pp: Vector3) -> void:
 	for w in _workers:
 		var near: bool = (w["at"] as Vector3).distance_to(pp) < 140.0
 		if not w.has("node"):
-			if not near:
+			if not near or not w["who"].has("ready"):
 				continue
-			Body.prepare(w["who"]["spec"])
 			var f := _figure(w["who"])
 			w["node"] = f["node"]
 			w["body"] = f["body"]
@@ -243,10 +260,19 @@ func _physics_process(delta: float) -> void:
 	if world == null:
 		return
 	var pp: Vector3 = player.global_position
-	if not _unready.is_empty():                          # one more character's parts built (the first ones take longest: the rest share theirs)
-		var who: Dictionary = _unready.pop_front()
-		Body.prepare(who["spec"])
-		_ready_chars.append(who)
+	var t0 := Time.get_ticks_usec()
+	# the characters' parts are built a piece at a time, for at most 1.5 ms of a step (the first ones take
+	# longest: the rest share theirs). The benchmark found a whole figure built in one frame: 170 ms.
+	while not _unready.is_empty() and Time.get_ticks_usec() - t0 < 1500:
+		var who: Dictionary = _unready[0]
+		if Body.prepare_step(who["spec"], _prep_step):
+			_unready.pop_front()
+			_prep_step = 0
+			who["ready"] = true
+			if not who["spec"].get("vest", false):
+				_ready_chars.append(who)
+		else:
+			_prep_step += 1
 	_work(delta, pp)
 	_tick -= delta
 	if _tick <= 0.0:
@@ -260,6 +286,8 @@ func _physics_process(delta: float) -> void:
 		var want := int((2.0 + (MOST - 2.0) * _town) * (1.0 - 0.65 * daytime.night) * (1.0 - 0.6 * float(weather.now["rain"])))
 		if festival:
 			want += 24
+		if crowd_at != null and (crowd_at as Vector2).distance_to(Vector2(pp.x, pp.z)) < 450.0:
+			want += 22                                       # a match day: people on their way to the stadium
 		if people.size() < want and not _ready_chars.is_empty():
 			_make(pp, c)
 	var i := people.size() - 1
@@ -284,6 +312,7 @@ func _physics_process(delta: float) -> void:
 					arm.rotation.x = 0.04 * sin(f["phase"] * 0.9)
 			(f["body"]["head"] as Node3D).rotation.y = 0.35 * sin(f["phase"] * 0.31)
 		i -= 1
+	world.took("people", t0)
 
 
 func _make(pp: Vector3, c: Vector2i) -> void:

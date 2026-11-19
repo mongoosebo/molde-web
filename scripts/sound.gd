@@ -112,6 +112,13 @@ func _set_loop(name: String, level: float, delta: float, pitch := 1.0) -> void:
 
 
 func _process(delta: float) -> void:
+	var t0_ := Time.get_ticks_usec()
+	_run(delta)
+	if world != null:
+		world.took("sound", t0_)
+
+
+func _run(delta: float) -> void:
 	if player == null:
 		return
 	var pos: Vector3 = player.global_position

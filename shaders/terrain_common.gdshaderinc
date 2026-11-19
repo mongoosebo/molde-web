@@ -10,6 +10,7 @@ uniform sampler2D turf_nrm : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D stone_tex : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D stone_nrm : filter_linear_mipmap_anisotropic, repeat_enable;
 global uniform float wetness;            // 0 dry to 1 soaked (scripts/weather.gd)
+global uniform float snow;               // 0 bare ground to 1 winter (scripts/weather.gd, the season in the menu)
 uniform vec2 world_origin;
 uniform vec2 world_size;
 
@@ -64,5 +65,12 @@ vec3 ground_colour(vec3 wpos, inout vec3 n, float h, float dist, out float rough
 	// rain: everything darker, and stone, gravel and asphalt shine
 	col *= 1.0 - 0.28 * wetness;
 	rough = mix(rough, min(rough, mix(0.8, 0.35, max(stony, road))), wetness);
+	// winter: snow on everything but the water, thinner under trees and on what is steep, and ploughed off the roads
+	if (snow > 0.001) {
+		float lie = snow * (1.0 - lake) * smoothstep(0.1, 0.9, h) * (1.0 - 0.45 * m.b) * (1.0 - 0.8 * smoothstep(0.35, 0.6, slope)) * (1.0 - 0.7 * road);
+		lie *= 0.86 + 0.14 * smoothstep(0.3, 0.7, n1);
+		col = mix(col, vec3(0.84, 0.87, 0.92) * (0.93 + 0.07 * n2), clamp(lie, 0.0, 1.0));
+		rough = mix(rough, 0.82, clamp(lie, 0.0, 1.0));
+	}
 	return col;
 }

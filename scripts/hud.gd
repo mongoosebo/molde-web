@@ -22,6 +22,8 @@ var _age := 0.0
 
 class Compass extends Control:
 	var bearing := 0.0
+	var mark := NAN         # the bearing of where a job wants the player to go (scripts/jobs.gd), or NAN for none
+	var mark_far := 0.0     # and how far it is, in metres
 	const SPAN := 110.0     # degrees shown across the strip
 	const NAMES := {0: "N", 45: "NØ", 90: "Ø", 135: "SØ", 180: "S", 225: "SV", 270: "V", 315: "NV"}   # Norwegian: nord, øst, sør, vest
 
@@ -43,6 +45,15 @@ class Compass extends Control:
 			else:
 				draw_line(Vector2(x, 10), Vector2(x, 20), Color(1, 1, 1, 0.5 * fade), 1.0)
 		draw_line(Vector2(w * 0.5, 30), Vector2(w * 0.5, 36), Color(1.0, 0.8, 0.4), 2.0)
+		if not is_nan(mark):
+			# the goal: a green wedge under the strip, held at the edge when it is off to one side, with the distance
+			var dm := clampf(wrapf(mark - bearing, -180.0, 180.0), -SPAN * 0.5, SPAN * 0.5)
+			var mx := w * 0.5 + dm / SPAN * w
+			var green := Color(0.40, 1.0, 0.50)
+			draw_colored_polygon(PackedVector2Array([Vector2(mx, 31), Vector2(mx - 7, 43), Vector2(mx + 7, 43)]), green)
+			var far := ("%d m" % int(mark_far)) if mark_far < 1000.0 else ("%.1f km" % (mark_far / 1000.0))
+			var fw := font.get_string_size(far, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
+			draw_string(font, Vector2(clampf(mx - fw * 0.5, 0.0, w - fw), 58), far, HORIZONTAL_ALIGNMENT_LEFT, -1, 13, green)
 
 
 func _label(font_size: int, color: Color) -> Label:
@@ -76,9 +87,9 @@ func _ready() -> void:
 	add_child(_stamina_fill)
 
 	_help = _label(13, Color(1, 1, 1, 0.6))
-	_help.text = "WASD move  ·  Mouse look  ·  Shift sprint (swim faster)  ·  Space jump  ·  F get in/out of a vehicle  ·  Space in a car: drift  ·  Bicycle: hold Space and let go to jump  ·  Helicopter: mouse turns, Space up, Ctrl or C down, WASD lean  ·  Wheel zoom  ·  F11 fullscreen  ·  [ ] time of day  ·  V weather  ·  M mute  ·  Esc menu  ·  F5 start again  ·  Right mouse: leave a note"
+	_help.text = "WASD move  ·  Mouse look  ·  Shift sprint (swim faster)  ·  Space jump  ·  F get in/out of a vehicle  ·  Space in a car: drift  ·  Bicycle: hold Space and let go to jump  ·  Helicopter: mouse turns, Space up, Ctrl down, WASD lean  ·  Wheel zoom  ·  F11 fullscreen  ·  [ ] time of day  ·  V weather  ·  M mute  ·  E take a job  ·  J jobs and sights  ·  Q view from the seat  ·  Esc menu  ·  F5 start again  ·  Right mouse: leave a note"
 	if OS.has_feature("web"):
-		_help.text = "WASD move  ·  Mouse look  ·  Shift sprint (swim faster)  ·  Space jump  ·  F get in/out of a vehicle  ·  Space in a car: drift  ·  Bicycle: hold Space and let go to jump  ·  Helicopter: mouse turns, Space up, C down, WASD lean  ·  Wheel zoom  ·  F11 fullscreen  ·  [ ] time of day  ·  V weather  ·  M mute  ·  Esc menu  ·  F5 start again  ·  Click to take the mouse"
+		_help.text = "WASD move  ·  Mouse look  ·  Shift sprint (swim faster)  ·  Space jump  ·  F get in/out of a vehicle  ·  Space in a car: drift  ·  Bicycle: hold Space and let go to jump  ·  Helicopter: mouse turns, Space up, C down, WASD lean  ·  Wheel zoom  ·  F11 fullscreen  ·  [ ] time of day  ·  V weather  ·  M mute  ·  E take a job  ·  J jobs and sights  ·  Q view from the seat  ·  Esc menu  ·  F5 start again"
 
 	_intro = _label(22, Color(1, 1, 1, 1))
 	_intro.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -122,7 +133,7 @@ func start(w, p) -> void:
 func _layout() -> void:
 	var vs := get_viewport().get_visible_rect().size
 	_compass.position = Vector2(vs.x * 0.5 - 230.0, 18.0)
-	_compass.size = Vector2(460.0, 38.0)
+	_compass.size = Vector2(460.0, 62.0)
 	_stamina_bg.position = Vector2(28.0, vs.y - 44.0)
 	_stamina_bg.size = Vector2(180.0, 6.0)
 	_stamina_fill.position = _stamina_bg.position

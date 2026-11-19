@@ -189,11 +189,16 @@ func _unhandled_input(event: InputEvent) -> void:
 		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 		elif event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			_arm.spring_length = maxf(1.8, _arm.spring_length - 0.4)
+			if not seat_view:
+				_arm.spring_length = maxf(1.8, _arm.spring_length - 0.4)
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			_arm.spring_length = minf(12.0, _arm.spring_length + 0.4)
+			if not seat_view:
+				_arm.spring_length = minf(12.0, _arm.spring_length + 0.4)
 	elif event.is_action_pressed("interact"):
+		set_seat_view(false)
 		_toggle_atv()
+	elif event.is_action_pressed("view"):
+		set_seat_view(not seat_view)
 	elif event.is_action_pressed("fullscreen"):
 		var w := get_window()
 		w.mode = Window.MODE_WINDOWED if w.mode == Window.MODE_FULLSCREEN else Window.MODE_FULLSCREEN
@@ -227,6 +232,7 @@ func vehicle_label() -> String:
 func _toggle_atv(force := false) -> void:
 	if atv == null:
 		return
+	set_seat_view(false)
 	if not driving:
 		var v := _nearest_vehicle()
 		if v == null:
@@ -406,6 +412,9 @@ func _drive(delta: float, iv: Vector2) -> void:
 
 	if contact or in_water:
 		var throttle := -iv.y
+		# slippery winter roads (the menu): the wheels take longer to follow the steering, and to stop
+		var wt = get_parent().get("weather")
+		var icy := 0.22 if (wt != null and wt.winter and wt.slippery and not _spec.get("flies", false)) else 1.0
 		var fast: float = _spec["fast"]
 		var top: float = fast if Input.is_action_pressed("sprint") else float(_spec["speed"])
 		if in_water:
@@ -418,13 +427,13 @@ func _drive(delta: float, iv: Vector2) -> void:
 		var rate := 3.0                                  # coasting
 		if absf(target) > 0.1:
 			if signf(target) != signf(_drive_speed) and absf(_drive_speed) > 0.5:
-				rate = _spec["brake"]
+				rate = float(_spec["brake"]) * (0.35 if icy < 1.0 else 1.0)
 			else:
 				rate = float(_spec["power"]) * lerpf(1.0, 0.3, clampf(absf(_drive_speed) / fast, 0.0, 1.0))
 		_drive_speed = move_toward(_drive_speed, target, rate * delta)
 		# steering needs some speed, and gets calmer as it gets fast
 		var grip := clampf(_drive_speed / 3.0, -1.0, 1.0)
-		_heading -= iv.x * grip * delta * lerpf(2.2, 0.5, clampf(absf(_drive_speed) / fast, 0.0, 1.0))
+		_heading -= iv.x * grip * delta * lerpf(2.2, 0.5, clampf(absf(_drive_speed) / fast, 0.0, 1.0)) * float(_spec.get("turn", 1.0))      # (a bus turns wide)
 		# Drifting (Space, in a vehicle that can): the rear wheels let go. The nose swings round quickly with the
 		# steering while the car keeps travelling nearly the way it was going, scrubbing off speed as it slides.
 		var sliding: bool = _spec["drift"] and Input.is_action_pressed("jump") and absf(_drive_speed) > 5.0 and not in_water
@@ -433,7 +442,7 @@ func _drive(delta: float, iv: Vector2) -> void:
 			_course = lerp_angle(_course, _heading, minf(1.0, 0.9 * delta))
 			_drive_speed = move_toward(_drive_speed, 0.0, (4.0 + 9.0 * absf(sin(angle_difference(_course, _heading)))) * delta)
 		else:
-			_course = lerp_angle(_course, _heading, minf(1.0, (5.0 if absf(angle_difference(_course, _heading)) > 0.06 else 40.0) * delta))
+			_course = lerp_angle(_course, _heading, minf(1.0, (5.0 if absf(angle_difference(_course, _heading)) > 0.06 else 40.0) * delta * icy))
 		var slip := angle_difference(_course, _heading)
 		if absf(slip) > 1.2:                              # no further round than this: it would be going backwards
 			_heading = _course + 1.2 * signf(slip)
@@ -989,8 +998,35 @@ func _animate(delta: float, speed: float, grounded: bool) -> void:
 	_leg_r.position.y = HIP.y + _torso.position.y - 0.95
 
 
+## Q: the view from the seat of what is being driven, and back to the view from behind. From the seat the
+## mouse still looks round; the camera sits where the driver's eyes are and follows the vehicle as it leans.
+var seat_view := false
+var _seat_arm := 0.0
+
+
+func set_seat_view(on: bool) -> void:
+	if on == seat_view or (on and not driving):
+		return
+	seat_view = on
+	if on:
+		_seat_arm = _arm.spring_length
+		_arm.spring_length = 0.0
+		_cam.h_offset = 0.0
+		yaw = _heading
+		pitch = -0.06
+	else:
+		_arm.spring_length = _seat_arm
+		_cam.h_offset = 0.45
+
+
 func _process(_delta: float) -> void:
-	_pivot.global_position = get_global_transform_interpolated().origin + Vector3(0.0, 1.55, 0.0)
+	if seat_view and not driving:
+		set_seat_view(false)
+	if seat_view:
+		var eye: Vector3 = atv.eye() if atv.has_method("eye") else Vector3(0.0, 1.62, 0.12)
+		_pivot.global_position = get_global_transform_interpolated() * (_body.transform * eye)
+	else:
+		_pivot.global_position = get_global_transform_interpolated().origin + Vector3(0.0, 1.55, 0.0)
 	_pivot.rotation = Vector3(pitch, yaw, 0.0)
 	# The camera stays over the water while swimming; if it does dip under, the view is coloured (scripts/hud.gd).
 	var cw: Dictionary = world.water_at(_cam.global_position.x, _cam.global_position.z) if world != null else {}

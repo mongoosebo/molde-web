@@ -9,7 +9,7 @@ const Facades := preload("res://scripts/facades.gd")
 const CELL := 100.0
 const NEAR := 240.0            # build cells whose centre is this close
 const FAR := 340.0             # and drop them beyond this
-const BUDGET_USEC := 5000      # building work per frame
+const BUDGET_USEC := 2000      # building work per frame
 
 const ASPHALT := Color(0.42, 0.42, 0.44)
 const PATH := Color(0.50, 0.49, 0.48)
@@ -129,6 +129,7 @@ func update(p: Vector3) -> void:
 			var d := _dist(k, p)
 			if d < NEAR and _on_fine_ground(k):
 				_queue.append([d, k])
+				_index_ahead(k)
 	_queue.sort_custom(func(a, b): return a[0] < b[0])
 	for k in _cells.keys():
 		if _dist(k, p) > FAR or not _on_fine_ground(k):
@@ -159,7 +160,9 @@ func _drop(k: Vector2i) -> void:
 
 
 func _process(_delta: float) -> void:
+	var t0 := Time.get_ticks_usec()
 	_work(budget_usec)
+	world.took("cells", t0)
 
 
 ## Build everything in range right now (loading screen, screenshots).
@@ -205,45 +208,65 @@ func _work(budget: int) -> void:
 			_job["b"] += 1
 			if budget >= 0 and Time.get_ticks_usec() - t0 > budget:
 				return
-		_finish()
+		while not _finish():
+			if budget >= 0 and Time.get_ticks_usec() - t0 > budget:
+				return
 		if budget >= 0 and Time.get_ticks_usec() - t0 > budget:
 			return
 
 
-func _finish() -> void:
-	var node := Node3D.new()
-	var mb: Facades.MB = _job["mb"]
-	if not mb.is_empty():
-		var mi := MeshInstance3D.new()
-		mi.mesh = fac.commit(mb)
-		node.add_child(mi)
-		if far_meshes.has(_job_key):
-			far_meshes[_job_key].visible = false
-	var rb: Facades.MB = _job["roads"]
-	if not rb.is_empty():
-		var ri := MeshInstance3D.new()
-		ri.mesh = fac.commit(rb)
-		ri.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		if sweep:
-			ri.layers = 2
-		node.add_child(ri)
-	var cv: PackedVector3Array = _job["cv"]
-	if not cv.is_empty():
-		var shape := ConcavePolygonShape3D.new()
-		shape.backface_collision = true
-		shape.set_faces(cv)
-		var col := CollisionShape3D.new()
-		col.shape = shape
-		var body := StaticBody3D.new()
-		body.add_child(col)
-		node.add_child(body)
-	for rec in buildings.get(_job_key, []):
-		if rec["name"] != "":
-			_name_sign(node, rec)
-	world.props.solid(node, _job_key)
-	add_child(node)
-	_cells[_job_key] = node
-	_job = {}
+## The finished cell is put into the world in four steps, one a frame when the frame has no time to spare (all
+## at once took 5 to 7 ms, which showed as a stutter when driving): the buildings' mesh, the paving's mesh, the
+## solid shape, and the things that stand in the cell. Returns true when the cell is in.
+func _finish() -> bool:
+	var t9 := Time.get_ticks_usec()
+	if not _job.has("node"):
+		_job["node"] = Node3D.new()
+		_job["fin"] = 0
+	var node: Node3D = _job["node"]
+	match int(_job["fin"]):
+		0:
+			var mb: Facades.MB = _job["mb"]
+			if not mb.is_empty():
+				var mi := MeshInstance3D.new()
+				mi.mesh = fac.commit(mb)
+				node.add_child(mi)
+				_job["has_b"] = true
+		1:
+			var rb: Facades.MB = _job["roads"]
+			if not rb.is_empty():
+				var ri := MeshInstance3D.new()
+				ri.mesh = fac.commit(rb)
+				ri.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+				if sweep:
+					ri.layers = 2
+				node.add_child(ri)
+		2:
+			var cv: PackedVector3Array = _job["cv"]
+			if not cv.is_empty():
+				var shape := ConcavePolygonShape3D.new()
+				shape.backface_collision = true
+				shape.set_faces(cv)
+				var col := CollisionShape3D.new()
+				col.shape = shape
+				var body := StaticBody3D.new()
+				body.add_child(col)
+				node.add_child(body)
+		_:
+			for rec in buildings.get(_job_key, []):
+				if rec["name"] != "":
+					_name_sign(node, rec)
+			world.props.solid(node, _job_key)
+			add_child(node)
+			if _job.has("has_b") and far_meshes.has(_job_key):
+				far_meshes[_job_key].visible = false
+			_cells[_job_key] = node
+			_job = {}
+			world.took("cell_finish", t9)
+			return true
+	_job["fin"] += 1
+	world.took("cell_finish", t9)
+	return false
 
 
 ## The name of a building, lettered on its two longest walls.
@@ -319,6 +342,46 @@ func top_at(x: float, z: float) -> float:
 	return road + 0.10 if not is_nan(road) else NAN
 
 
+## Which triangles of a cell's paving lie in each 2.5 m square, for finding the height at a point quickly.
+static func _make_index(arr: PackedFloat32Array) -> Dictionary:
+	var idx := {}
+	var i := 0
+	while i < arr.size():
+		var sq := Vector2i(int(floor((arr[i] + arr[i + 3] + arr[i + 6]) / 7.5)), int(floor((arr[i + 2] + arr[i + 5] + arr[i + 8]) / 7.5)))
+		if not idx.has(sq):
+			idx[sq] = []
+		idx[sq].append(i)
+		i += 9
+	return idx
+
+
+## The same made on another thread when a cell comes into range, so that the first car, bus or walker to ask for
+## a height there does not hold a frame up for it (the benchmark found traffic waiting 10 to 15 ms at a time).
+var _index_asked := {}
+
+
+func _index_ahead(key: Vector2i) -> void:
+	var pv = paved.get(key)
+	if pv == null or not OS.has_feature("threads"):       # (a browser build without threads would do it here and now)
+		return
+	for part in 2:
+		var ikey := Vector3i(key.x, key.y, part)
+		if _tri_index.has(ikey) or _index_asked.has(ikey):
+			continue
+		_index_asked[ikey] = true
+		WorkerThreadPool.add_task(_index_task.bind(ikey, pv[part]))
+
+
+func _index_task(ikey: Vector3i, arr: PackedFloat32Array) -> void:
+	_index_done.call_deferred(ikey, _make_index(arr))
+
+
+func _index_done(ikey: Vector3i, idx: Dictionary) -> void:
+	_index_asked.erase(ikey)
+	if not _tri_index.has(ikey):
+		_tri_index[ikey] = idx
+
+
 func _laid_at(x: float, z: float, part: int) -> float:
 	var key := cell_of(x, z)
 	var pv = paved.get(key)
@@ -328,16 +391,10 @@ func _laid_at(x: float, z: float, part: int) -> float:
 	var ikey := Vector3i(key.x, key.y, part)
 	var idx = _tri_index.get(ikey)
 	if idx == null:
-		if _tri_index.size() > 150:
+		# (not made ahead of time: see _index_ahead. Making it here costs up to 15 ms for a cell full of asphalt.)
+		if _tri_index.size() > 700:
 			_tri_index.clear()
-		idx = {}
-		var i := 0
-		while i < arr.size():
-			var sq := Vector2i(int(floor((arr[i] + arr[i + 3] + arr[i + 6]) / 7.5)), int(floor((arr[i + 2] + arr[i + 5] + arr[i + 8]) / 7.5)))
-			if not idx.has(sq):
-				idx[sq] = []
-			idx[sq].append(i)
-			i += 9
+		idx = _make_index(arr)
 		_tri_index[ikey] = idx
 	var list = idx.get(Vector2i(int(floor(x / 2.5)), int(floor(z / 2.5))))
 	if list == null:

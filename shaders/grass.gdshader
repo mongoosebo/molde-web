@@ -6,6 +6,7 @@ render_mode cull_disabled, world_vertex_coords;
 // their colour from the tuft (darker at the foot). UV.y is 0 at the foot of a blade and 1 at its tip.
 // Further off fewer tufts are drawn (all of them to 22 m, a quarter at the far end), and those that are left
 // are wider, so the ground looks as covered for far fewer triangles.
+global uniform float snow;
 global uniform vec3 wind;
 global uniform float wetness;
 uniform float far = 60.0;
@@ -26,11 +27,12 @@ void vertex() {
 	float bend = (0.04 + 0.34 * wind.z) * (0.55 + 0.45 * run) * UV.y * UV.y;
 	VERTEX = foot + (VERTEX - foot) * vec3(spread, 1.0, spread) * keep + with_wind * bend * keep;
 	VERTEX.y -= bend * 0.35 * keep;
+	VERTEX.y = mix(VERTEX.y, foot.y, snow * 0.8);                           // winter: only the tips stand out of the snow
 	NORMAL = vec3(0.0, 1.0, 0.0);
 }
 
 void fragment() {
-	ALBEDO = pow(COLOR.rgb, vec3(2.2)) * mix(0.45, 1.05, tip) * (1.0 - 0.25 * wetness);
+	ALBEDO = mix(pow(COLOR.rgb, vec3(2.2)) * mix(0.45, 1.05, tip) * (1.0 - 0.25 * wetness), vec3(0.80, 0.80, 0.74), snow * 0.6);
 	ROUGHNESS = 0.9;
 	NORMAL = normalize((VIEW_MATRIX * vec4(0.0, 1.0, 0.0, 0.0)).xyz);      // lit as the ground is, whichever way a blade faces
 }

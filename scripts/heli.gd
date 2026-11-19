@@ -463,6 +463,10 @@ func chassis_xf() -> Transform3D:
 
 
 ## Where the pilot sits (the right-hand front seat): the hips, and how far the back leans.
+func eye() -> Vector3:
+	return Vector3(0.38, 1.72, -0.80)
+
+
 func seat() -> Array:
 	return [Vector3(0.38, 1.00, -0.76), -0.10]
 

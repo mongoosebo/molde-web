@@ -35,6 +35,27 @@ var kind := "cloudy"                     # the weather it is, or is turning into
 var changing := true                     # whether it changes by itself
 var now := {}                            # the values at this moment (between two weathers while it turns)
 var wetness := 0.0                       # how wet everything is, 0 dry to 1 soaked
+var winter := false: set = set_winter    # the season (the menu): snow on the ground and the roofs, and what falls is snow
+var snow := 0.0                          # how much snow lies, 0 to 1: follows `winter` over a few seconds
+var slippery := false                    # winter roads that are slippery to drive on (the menu; scripts/player.gd reads it)
+
+
+## In winter the rain falls as snow: slow, drifting flakes instead of streaks.
+func set_winter(on: bool) -> void:
+	winter = on
+	if _rain == null:
+		return
+	var pm := _rain.process_material as ParticleProcessMaterial
+	pm.initial_velocity_min = 1.6 if on else 15.0
+	pm.initial_velocity_max = 2.6 if on else 19.0
+	pm.gravity = Vector3(0, -0.2, 0) if on else Vector3(0, -4.0, 0)
+	pm.spread = 25.0 if on else 2.0
+	_rain.lifetime = 6.0 if on else 1.0
+	(_rain.draw_pass_1 as QuadMesh).size = Vector2(0.045, 0.045) if on else Vector2(0.014, 0.7)
+	var m := (_rain.draw_pass_1 as QuadMesh).material as StandardMaterial3D
+	m.albedo_color = Color(0.95, 0.96, 0.98, 0.85) if on else Color(0.78, 0.82, 0.86, 0.32)
+	m.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED if on else BaseMaterial3D.BILLBOARD_FIXED_Y
+	_rain.restart()
 var wind := 0.3                          # how hard it blows now, 0 calm to 1 storm (with gusts)
 var wind_set := -1.0                     # the menu's slider: under 0, the weather decides
 var wind_dir := Vector2(0.94, 0.34)      # the way it blows (down the fjord, as the waves run)
@@ -187,6 +208,13 @@ func _setup_flags() -> void:
 
 
 func _process(delta: float) -> void:
+	var t0_ := Time.get_ticks_usec()
+	_run(delta)
+	if world != null:
+		world.took("weather", t0_)
+
+
+func _run(delta: float) -> void:
 	# changing by itself
 	if changing:
 		_next_in -= delta
@@ -205,7 +233,7 @@ func _process(delta: float) -> void:
 func _apply(delta: float) -> void:
 	var rain: float = now["rain"]
 	# wet in under a minute of heavy rain, dry again in a few
-	if rain > 0.02:
+	if rain > 0.02 and not winter:
 		wetness = minf(1.0, wetness + delta * (0.012 + 0.03 * rain))
 	else:
 		wetness = maxf(0.0, wetness - delta / 200.0)
@@ -214,6 +242,9 @@ func _apply(delta: float) -> void:
 	var base: float = wind_set if wind_set >= 0.0 else float(now["wind"])
 	wind = clampf(base * (0.75 + 0.35 * sin(_gust * 0.37) + 0.2 * sin(_gust * 1.13 + 1.0)), 0.0, 1.0)
 	RenderingServer.global_shader_parameter_set("wetness", wetness)
+	# the season (the menu sets `winter`): the snow comes and goes over a few seconds, not at a stroke
+	snow = move_toward(snow, 1.0 if winter else 0.0, delta / 4.0)
+	RenderingServer.global_shader_parameter_set("snow", snow)
 	RenderingServer.global_shader_parameter_set("wind", Vector3(wind_dir.x, wind_dir.y, wind))
 	RenderingServer.global_shader_parameter_set("cloud_down", float(now["cloud"]))
 	if daytime != null:
@@ -229,13 +260,13 @@ func _apply(delta: float) -> void:
 	if cam != null and _rain != null:
 		var on := rain > 0.02
 		_rain.emitting = on
-		_drops.emitting = on and not player.under_water
+		_drops.emitting = on and not player.under_water and not winter
 		if on:
 			_rain.amount_ratio = clampf(0.15 + 0.85 * rain, 0.0, 1.0)
 			_drops.amount_ratio = clampf(0.2 + 0.8 * rain, 0.0, 1.0)
 			var slant := Vector3(wind_dir.x, 0, wind_dir.y) * wind * 6.0
 			_rain.global_position = cam.global_position + Vector3(0, 9.0, 0) - slant * 0.5 + (-cam.global_transform.basis.z * Vector3(1, 0, 1)) * 6.0
-			(_rain.process_material as ParticleProcessMaterial).direction = (Vector3(0, -17.0, 0) + slant).normalized()
+			(_rain.process_material as ParticleProcessMaterial).direction = (Vector3(0, -17.0 if not winter else -2.0, 0) + slant * (0.25 if winter else 1.0)).normalized()
 			var pp: Vector3 = player.global_position
 			_drops.global_position = Vector3(pp.x, pp.y + 0.03, pp.z)
 			# rings on the water near the player

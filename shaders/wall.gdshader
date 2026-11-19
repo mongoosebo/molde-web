@@ -18,6 +18,7 @@ uniform float metal = 0.0;
 uniform bool by_mesh = false;            // a roof: textured by its own coordinates
 uniform float moss = 0.0;                // how readily moss takes (roof tiles 1, sheet 0.3, walls 0)
 uniform bool has_rough = false;
+global uniform float snow;
 global uniform float wetness;
 
 varying vec3 wpos;
@@ -60,6 +61,7 @@ void fragment() {
 	// rain
 	float wet = wetness * mix(0.5, 1.0, 1.0 - is_wall);
 	col *= 1.0 - 0.28 * wet;
+	col = mix(col, vec3(0.84, 0.87, 0.92), snow * 0.85 * smoothstep(0.75, 0.95, n.y));      // winter: snow on what faces up
 	ALBEDO = col;
 	ROUGHNESS = mix(clamp(r, 0.05, 1.0), min(r, 0.4), wet);
 	METALLIC = metal;

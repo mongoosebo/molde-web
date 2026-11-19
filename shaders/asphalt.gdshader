@@ -8,6 +8,7 @@ shader_type spatial;
 uniform sampler2D albedo_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D normal_tex : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D noise_tex : filter_linear_mipmap, repeat_enable;
+global uniform float snow;
 global uniform float wetness;
 
 varying vec3 wpos;
@@ -41,6 +42,8 @@ void fragment() {
 	col *= 1.0 - 0.55 * crack;
 	// rain
 	col *= 1.0 - 0.32 * wetness;
+	// winter: ploughed and gritted, grey slush in drifts and trodden snow where the noise is high
+	col = mix(col, vec3(0.62, 0.65, 0.69), snow * (0.16 + 0.55 * smoothstep(0.42, 0.70, mid * 0.6 + big * 0.4)));
 	ALBEDO = col;
 	ROUGHNESS = mix(mix(0.92, 0.8, patch), 0.36, wetness);
 	TANGENT = normalize((VIEW_MATRIX * vec4(1.0, 0.0, 0.0, 0.0)).xyz);

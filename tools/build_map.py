@@ -1577,13 +1577,39 @@ for _pts, _as_road in ((overrides.ASPHALT_POCKETS, True), (overrides.PAVING_POCK
 # paving at a point into asphalt. They are applied in the order they were made.
 _patches = [(k_, shapely.Point(x_, z_).buffer(r_)) for k_, x_, z_, r_ in overrides.PATCHES]
 _patches += [("paving", g) for g in _sunk_strips if not g.is_empty]
+# Asphalt the map does not know of, found by tools/ortho_paved.py from the laser ground (flat and bare) and
+# satellite pictures (not green): car parks, yards and forecourts beside a road or a building. Only what it is
+# fairly sure of is laid (a large empty lot may be gravel, and is left); it never takes sidewalk away, and what
+# is marked by hand, above and below, is applied after it and so wins. overrides.AUTO_PAVED_NOT: places
+# (x, z) whose find is wrong and is left out.
+_apath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "auto_paved.json")
+if os.path.exists(_apath):
+    _auto = []
+    for _q in json.load(open(_apath)):
+        if _q.get("confidence", 0.0) < 0.6:
+            continue
+        _o = _q["outline"]
+        _g = shapely.Polygon(list(zip(_o[0::2], _o[1::2])), [list(zip(_h[0::2], _h[1::2])) for _h in _q.get("holes", [])])
+        if not _g.is_valid:
+            _g = _g.buffer(0)
+        if any(_g.distance(shapely.Point(x_, z_)) < 1.0 for x_, z_ in getattr(overrides, "AUTO_PAVED_NOT", [])):
+            continue
+        _auto.append(_g)
+    if _auto:
+        _au = unary_union(_auto).difference(side.buffer(0.05)).difference(bld_union.buffer(0.3)).intersection(map_box)
+        _au = _au.buffer(-0.8, quad_segs=3).buffer(0.8, quad_segs=3)
+        road_all = unary_union([road_all, _au])
+        print("  asphalt found from the laser ground and satellite pictures: %d places, %d m2" % (len(_auto), _au.area))
 _ppath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "patches.jsonl")
 # The squares from the tool are markers, not the shape itself (said 18 Nov): they show where the surface is to be.
 # So a run of squares of one kind is taken together: the gaps between them and the pockets between them and the
 # surface of that kind already beside them are filled, the stair of square corners is rounded off, and the
 # ground under marked asphalt is evened out more than other paved ground (see where the surfaces are laid).
 _marked = []
+_gravel_marks = []
+_patch_lines = 0
 if os.path.exists(_ppath):
+    _patch_lines = sum(1 for _ln in open(_ppath) if _ln.strip())
     _runs = []
     for _ln in open(_ppath):
         if _ln.strip():
@@ -1596,6 +1622,10 @@ if os.path.exists(_ppath):
                 _runs.append((_q["kind"], [_sq]))
     for _kind, _sqs in _runs:
         _u = unary_union(_sqs)
+        if _kind == "gravel":                             # bare gravel: nothing laid, the ground itself coloured as a gravel road is
+            _gravel_marks.append(_u.buffer(2.0, quad_segs=4).buffer(-2.0, quad_segs=4))
+            _patches.append(("none", _gravel_marks[-1]))
+            continue
         if _kind not in ("asphalt", "paving"):
             _patches.append((_kind, _u))
             continue
@@ -2437,6 +2467,13 @@ del canopy, chm
 # The road tint of the ground: full (255) where the ground itself is the road surface (gravel roads, runways),
 # half (128) where laid asphalt or paving lies on it. The game tints the half-strength kind only far away, where
 # the laid surfaces are not built; close by, the asphalt is what was laid, and the bank beside it stays green.
+if _gravel_marks:
+    _gd = ImageDraw.Draw(road_im)
+    for _g0 in _gravel_marks:
+        for g in getattr(_g0, "geoms", [_g0]):
+            if g.geom_type == "Polygon":
+                _gd.polygon([(x - X0, z - Z0) for x, z in g.exterior.coords], fill=255)
+    del _gd
 _r = np.asarray(road_im).copy()
 _laid = ndimage.binary_dilation(pmask, iterations=2)[:_r.shape[0], :_r.shape[1]]
 _r[:_laid.shape[0], :_laid.shape[1]][_laid & (_r[:_laid.shape[0], :_laid.shape[1]] > 0)] = 128
@@ -3671,7 +3708,7 @@ meta = {
     "spawn": spawn, "places": places, "pois": pois, "streets": street_out, "fires": fires, "landmarks": landmarks, "plaza": plaza,
     "stadium": stadium, "piers": piers, "portals": portals,
     "quays": quays, "sports": sports, "canopies": canopies, "skywalks": skywalks, "fields": fields, "golf": golf, "courts": courts, "fountains": fountains, "door_signs": door_signs, "mercedes": list(overrides.MERCEDES_AT), "bicycle": list(overrides.BICYCLE_AT), "statues": statues, "sandpits": sandpits,
-    "plaza_tris": plaza_tris, "radhus_steps": radhus_steps, "rosepiken": list(overrides.ROSEPIKEN), "rose_beds": rose_beds, "sites": sites,
+    "plaza_tris": plaza_tris, "radhus_steps": radhus_steps, "rosepiken": list(overrides.ROSEPIKEN), "rose_beds": rose_beds, "sites": sites, "patches_built": _patch_lines,
     "doors": {k: [list(d) for d in v] for k, v in overrides.DOORS.items()},
     "attribution": "Map data © OpenStreetMap contributors (ODbL). Terrain, building heights and roofs: © Kartverket, hoydedata.no.",
 }

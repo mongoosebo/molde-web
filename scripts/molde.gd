@@ -464,10 +464,18 @@ func _board(at: Vector3, face: float, title: String, text: String, colour: Color
 
 
 func _process(delta: float) -> void:
+	var t0_ := Time.get_ticks_usec()
+	_run(delta)
+	if world != null:
+		world.took("molde", t0_)
+
+
+func _run(delta: float) -> void:
 	_tick -= delta
 	if _tick > 0.0 or daytime == null:
 		return
 	_tick = 2.0
+	_match(match_day)
 	var on: bool = daytime.day >= JAZZ_FROM and daytime.day <= JAZZ_TO
 	if on != festival:
 		festival = on
@@ -476,6 +484,78 @@ func _process(delta: float) -> void:
 		if _jazz != null:
 			_jazz.visible = on
 		people.festival = on
+
+
+## A match day at Aker Stadion (the menu): the floodlights on over the pitch, more people about near the
+## stadium, and the sound of the crowd, heard from far across the town.
+var match_day := false
+var _match_on := false
+var _match_root: Node3D
+
+
+func _match(on: bool) -> void:
+	if on == _match_on:
+		return
+	_match_on = on
+	var st: Dictionary = world.meta.get("stadium", {})
+	var outline: Array = st.get("outline", [])
+	if outline.size() < 6:
+		return
+	var lo := Vector2(1e9, 1e9)
+	var hi := Vector2(-1e9, -1e9)
+	for i in outline.size() / 2:
+		lo = lo.min(Vector2(outline[2 * i], outline[2 * i + 1]))
+		hi = hi.max(Vector2(outline[2 * i], outline[2 * i + 1]))
+	var mid := (lo + hi) * 0.5
+	people.crowd_at = mid if on else null
+	if _match_root == null and on:
+		_match_root = Node3D.new()
+		_match_root.name = "MatchDay"
+		add_child(_match_root)
+		var y: float = float(st.get("y", world.height_at(mid.x, mid.y)))
+		for corner in [Vector2(lo.x, lo.y), Vector2(hi.x, lo.y), Vector2(lo.x, hi.y), Vector2(hi.x, hi.y)]:
+			var c: Vector2 = corner
+			var lamp := SpotLight3D.new()
+			lamp.light_energy = 28.0
+			lamp.spot_range = 190.0
+			lamp.spot_angle = 48.0
+			lamp.light_color = Color(0.92, 0.96, 1.0)
+			lamp.shadow_enabled = false
+			lamp.position = Vector3(c.x, y + 34.0, c.y)
+			_match_root.add_child(lamp)
+			lamp.look_at(Vector3(mid.x, y, mid.y))
+			var glow := MeshInstance3D.new()
+			var bm := BoxMesh.new()
+			bm.size = Vector3(7.0, 3.0, 0.6)
+			var gm := StandardMaterial3D.new()
+			gm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			gm.albedo_color = Color(1.0, 1.0, 0.95)
+			gm.emission_enabled = true
+			gm.emission = Color(1.0, 1.0, 0.95)
+			gm.emission_energy_multiplier = 6.0
+			bm.material = gm
+			glow.mesh = bm
+			glow.position = lamp.position
+			_match_root.add_child(glow)
+			glow.look_at(Vector3(mid.x, y, mid.y))
+		var main_snd = get_parent().get("sound")
+		if main_snd != null:
+			var voice := AudioStreamPlayer3D.new()
+			voice.stream = main_snd._stream("crowd", true)
+			voice.unit_size = 60.0
+			voice.max_distance = 1800.0
+			voice.volume_db = 4.0
+			voice.position = Vector3(mid.x, y + 12.0, mid.y)
+			voice.name = "Crowd"
+			_match_root.add_child(voice)
+	if _match_root != null:
+		_match_root.visible = on
+		var v = _match_root.get_node_or_null("Crowd")
+		if v != null:
+			if on:
+				(v as AudioStreamPlayer3D).play()
+			else:
+				(v as AudioStreamPlayer3D).stop()
 
 
 ## The festival on Rådhusplassen: a stage at the town hall end, banners round the square, and bunting.

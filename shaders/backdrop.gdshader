@@ -12,6 +12,7 @@ uniform vec3 haze = vec3(0.36, 0.31, 0.27);      // the colour of the air (scrip
 uniform float thick = 1.0;                       // how thick the air is: under 1 on a clear day, when the mountains stand out
 global uniform float cloud_down;                 // low cloud: how far it has come down on the mountains, 0 to 1
 global uniform float night;
+global uniform float snow;
 
 varying vec3 wpos;
 
@@ -49,7 +50,7 @@ void fragment() {
 	vec3 birch = vec3(0.150, 0.235, 0.085);
 	vec3 heath = vec3(0.215, 0.205, 0.115);
 	vec3 rock = vec3(0.290, 0.285, 0.280);
-	vec3 snow = vec3(0.900, 0.925, 0.960);
+	vec3 snow_col = vec3(0.900, 0.925, 0.960);
 	float slope = 1.0 - n.y;
 	float hh = h + (n1 - 0.5) * 220.0 + (n2 - 0.5) * 90.0;
 	vec3 col = mix(forest, birch, smoothstep(140.0, 420.0, hh));
@@ -58,7 +59,8 @@ void fragment() {
 	col = mix(col, rock, max(smoothstep(720.0, 980.0, hh), smoothstep(0.22, 0.45, slope) * smoothstep(250.0, 500.0, h)));
 	col *= 0.78 + 0.30 * n3 + 0.14 * n2;
 	float white = smoothstep(820.0, 1080.0, h + (n2 - 0.5) * 340.0 + (n3 - 0.5) * 120.0) * (1.0 - 0.75 * smoothstep(0.40, 0.68, slope));
-	col = mix(col, snow * (0.93 + 0.07 * n3), clamp(white, 0.0, 1.0));
+	white = max(white, snow * (1.0 - 0.6 * smoothstep(0.40, 0.68, slope)) * (0.75 + 0.25 * n2));      // winter: white down to the fjord
+	col = mix(col, snow_col * (0.93 + 0.07 * n3), clamp(white, 0.0, 1.0));
 	float fade = 1.0 - exp(-distance(wpos, CAMERA_POSITION_WORLD) * 0.000030 * thick);
 	// a band of cloud hanging on the mountains: everything above its ragged underside is in it
 	float base = mix(1500.0, 260.0, cloud_down);

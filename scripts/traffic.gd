@@ -26,9 +26,10 @@ var daytime
 var amount := 2: set = set_amount       # 0 none, 1 little, 2 normal
 var cars: Array = []                     # each: {w, dir, s, v, col, hold}
 var buses: Array = []
-var stats := {"made": 0, "removed": 0, "turns": 0, "stops_for_player": 0, "bus_stops": 0, "flights": 0}
+var stats := {"made": 0, "removed": 0, "turns": 0, "stops_for_player": 0, "stops_for_walkers": 0, "gave_way": 0, "bus_stops": 0, "flights": 0}
 
 var _ways: Array = []                    # the roads cars drive on (detail.ways entries)
+var _way_of := {}                        # number of a road in detail.ways -> its number in _ways
 var _stations: Array = []                # for each road: the distances along it where another road meets it (and its two ends)
 var _links := {}                         # Vector2i(road, station number) -> [Vector2i(road, station number), ...]: where one can cross over
 var _models: Array = []               # the car models: {body, wheel (meshes), track, wheel_r, axle_f, axle_r, wb, paints}
@@ -59,7 +60,8 @@ func setup(w, p, d) -> void:
 	daytime = d
 	_rng.seed = 7
 	_meshes = world.props._meshes()
-	for way in world.detail.ways:
+	for wn in world.detail.ways.size():
+		var way: Array = world.detail.ways[wn]
 		if way[1] == 5 and (way[3] as PackedVector2Array).size() > 50:
 			_runway = way[3]
 		if way[1] != 0 or (way[3] as PackedVector2Array).size() < 2:
@@ -75,6 +77,7 @@ func setup(w, p, d) -> void:
 				laid += 1
 		if laid * 10 < seen * 7:
 			continue
+		_way_of[wn] = _ways.size()
 		_ways.append(way)
 	_join_roads()
 	physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF      # (see _process; everything under this node is moved each frame)
@@ -216,6 +219,13 @@ func _xf(pos: Vector3, fwd: Vector2, scale := Vector3.ONE) -> Transform3D:
 ## smoothing then slid each copy from where the k-th car was to where the new k-th car is, which showed as cars
 ## flickering (note of 17 Nov). Moved each frame they are smooth by themselves.
 func _process(delta: float) -> void:
+	var t0_ := Time.get_ticks_usec()
+	_run(delta)
+	if world != null:
+		world.took("traffic", t0_)
+
+
+func _run(delta: float) -> void:
 	if world == null:
 		return
 	var pp: Vector3 = player.global_position
@@ -224,7 +234,9 @@ func _process(delta: float) -> void:
 	_spawn_in -= delta
 	if cars.size() < want and _spawn_in <= 0.0:
 		_spawn_in = 0.25
+		var tq236 := Time.get_ticks_usec()
 		_make_car(here)
+		world.took("t_make", tq236)
 	# by road and direction, for keeping distance
 	var lanes := {}
 	for c in cars:
@@ -233,6 +245,14 @@ func _process(delta: float) -> void:
 			lanes[key] = []
 		lanes[key].append(c)
 	var player_speed := Vector2(player.velocity.x, player.velocity.z).length()
+	var snd = get_parent().get("sound")
+	var walkers := PackedVector2Array()                  # townspeople near enough to matter
+	var folk = get_parent().get("people")
+	if folk != null:
+		for f in folk.people:
+			var fp: Vector3 = (f["node"] as Node3D).position
+			if absf(fp.x - here.x) < 260.0 and absf(fp.z - here.y) < 260.0:
+				walkers.append(Vector2(fp.x, fp.z))
 	var i := cars.size() - 1
 	while i >= 0:
 		var c: Dictionary = cars[i]
@@ -276,6 +296,34 @@ func _process(delta: float) -> void:
 			if c["v"] > 0.5 and top > 0.0:
 				stats["stops_for_player"] += 1
 			top = 0.0
+			# kept waiting, it sounds its horn (once, and then not again for a while)
+			c["held"] = float(c.get("held", 0.0)) + delta
+			if float(c["held"]) > 3.0 and snd != null:
+				c["held"] = -8.0
+				snd.play_at("horn", Vector3(p.x, _height(p) + 1.0, p.y), 0.9)
+		else:
+			c["held"] = minf(float(c.get("held", 0.0)), 0.0)
+		# somebody walking in the way ahead (on a crossing, or anywhere else): it waits for them
+		for wk in walkers:
+			var rw: Vector2 = wk - p
+			var fw: float = rw.dot(fwd)
+			if fw > 0.5 and fw < 6.0 + c["v"] * 1.4 and absf(rw.dot(Vector2(-fwd.y, fwd.x))) < 2.0:
+				if c["v"] > 0.5 and top > 0.0:
+					stats["stops_for_walkers"] += 1
+				top = 0.0
+		# another car across its way (at a junction, on a roundabout): the one already there goes first. Of two
+		# that both stand, the one made first goes, so they do not wait for each other for ever.
+		for oi in cars.size():
+			var o2: Dictionary = cars[oi]
+			if oi == i or (o2["w"] == c["w"] and o2["dir"] == c["dir"]):
+				continue
+			var ro: Vector2 = (o2["pos"] as Vector2) - p
+			var fo: float = ro.dot(fwd)
+			if fo > 1.5 and fo < 5.5 + c["v"] * 1.2 and absf(ro.dot(Vector2(-fwd.y, fwd.x))) < 1.7 and (o2["head"] as Vector2).dot(fwd) > -0.6:
+				if float(o2["v"]) > 0.6 or oi < i:
+					if c["v"] > 0.5 and top > 0.0:
+						stats["gave_way"] += 1
+					top = 0.0
 		c["v"] = move_toward(c["v"], top, (2.4 if top > c["v"] else 7.0) * delta)
 		# the point ahead keeps its lead: it runs on faster when the car has come close to it, and waits when the car is far behind
 		var before: float = c["s"]
@@ -318,7 +366,9 @@ func _process(delta: float) -> void:
 		var p2: Vector2 = c["pos"]
 		var xf := _xf(Vector3(p2.x, _height(p2) - 0.08, p2.y), c["head"])
 		if not c.has("node"):
+			var tq330 := Time.get_ticks_usec()
 			_show(c)
+			world.took("t_show", tq330)
 		elif step_ok:
 			stats["sharpest_swing_deg"] = maxf(stats.get("sharpest_swing_deg", 0.0), absf(rad_to_deg((c["drawn"] as Vector2).angle_to(c["head"]))))
 			var was: Vector3 = (c["node"] as Node3D).global_position
@@ -339,10 +389,18 @@ func _process(delta: float) -> void:
 			_bodies[k].global_transform = near[k][1]
 		else:
 			_bodies[k].position = Vector3(0, -500, 0)
+	var tq351 := Time.get_ticks_usec()
 	_run_parked(delta, pp)
+	world.took("t_parked", tq351)
+	var tq352 := Time.get_ticks_usec()
 	_run_buses(delta, here, pp)
+	world.took("t_buses", tq352)
+	var tq353 := Time.get_ticks_usec()
 	_run_boats(delta, pp)
+	world.took("t_boats", tq353)
+	var tq354 := Time.get_ticks_usec()
 	_run_plane(delta)
+	world.took("t_plane", tq354)
 
 
 # ------------------------------------------------------------------ parked cars
@@ -377,7 +435,9 @@ func _run_parked(delta: float, pp: Vector3) -> void:
 			continue
 		var e: Array = want[k][2]
 		var c := {"model": posmod(hash(key), _models.size()), "col": e[1]}
+		var tq389 := Time.get_ticks_usec()
 		_show(c)
+		world.took("t_show", tq389)
 		var xf: Transform3D = e[0]
 		var stand: Vector3 = xf.origin
 		var paved: float = world.detail.surface_at(stand.x, stand.z)
@@ -482,7 +542,7 @@ func _make_car(here: Vector2) -> void:
 			continue
 		var k: int = _rng.randi_range(0, list.size() / 2 - 1) * 2
 		var way: Array = world.detail.ways[list[k]]
-		var wi := _ways.find(way)
+		var wi: int = _way_of.get(list[k], -1)          # (not _ways.find: that compares whole roads, 12 ms a time)
 		if wi < 0:
 			continue
 		var s: float = (way[7] as PackedFloat32Array)[list[k + 1]]
@@ -559,6 +619,54 @@ func _route(from: Vector2i, to: Vector2i) -> Array:
 		else:
 			legs.append([a.x, s0, s1])
 	return legs
+
+
+## A way along the roads from one place to another, as points a few metres apart (for jobs, the driving checks
+## and anything else that needs to know how to get somewhere). Empty if the roads do not join up.
+func route_points(a: Vector2, b: Vector2, step := 4.0) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	for leg in _route(_nearest_station(a), _nearest_station(b)):
+		var way: Array = _ways[leg[0]]
+		var n := maxi(int(absf(leg[2] - leg[1]) / step), 1)
+		for i in n + 1:
+			var q: Vector2 = _along(way, lerpf(leg[1], leg[2], float(i) / n))[0]
+			if out.is_empty() or out[out.size() - 1].distance_to(q) > 0.5:
+				out.append(q)
+	return out
+
+
+## A bus line as places in the world: {"way": points every 5 m from the bus square outward, "stops": its stops in order}.
+func line_points(k: int) -> Dictionary:
+	var b: Dictionary = buses[k]
+	var way := PackedVector2Array()
+	var stops: Array = []
+	var run := 0.0
+	var next := 0
+	var at: Array = b["stops"]
+	for leg in b["path"]:
+		var w: Array = _ways[leg[0]]
+		var span: float = absf(leg[2] - leg[1])
+		var dir: float = signf(leg[2] - leg[1])
+		var n := maxi(int(span / 5.0), 1)
+		for i in n + 1:
+			way.append(_along(w, leg[1] + dir * span * float(i) / n)[0])
+		while next < at.size() and float(at[next]) <= run + span:
+			var a := _along(w, leg[1] + dir * (float(at[next]) - run))
+			var fwd: Vector2 = (a[1] as Vector2) * dir
+			stops.append((a[0] as Vector2) + Vector2(-fwd.y, fwd.x) * minf(float(a[2]) * 0.5, 1.9))
+			next += 1
+		run += span
+	if stops.is_empty() or (stops[stops.size() - 1] as Vector2).distance_to(way[way.size() - 1]) > 80.0:
+		stops.append(way[way.size() - 1])                    # (the end of the line is a stop too)
+	return {"way": way, "stops": stops}
+
+
+## The ferry gets on with it (somebody on board is passing the time): `extra` more seconds of sailing now.
+func hurry_ferry(extra: float) -> void:
+	for b in _boats:
+		if b["kind"] == "ferry" and float(b["wait"]) <= 0.0:
+			var total: float = (b["a"] as Vector2).distance_to(b["b"])
+			b["t"] = clampf(float(b["t"]) + float(b["v"]) * extra * (1.0 if b["going"] else -1.0), 0.0, total)
 
 
 ## The station nearest a place, on a road wide enough for a bus.
@@ -663,6 +771,9 @@ func _run_buses(delta: float, here: Vector2, pp: Vector3) -> void:
 				if to_stop < 1.5:
 					b["wait"] = 6.0
 					b["next"] += 1
+					var folk2 = get_parent().get("people")
+					if folk2 != null:                               # those waiting at the stop get on
+						folk2.bus_called(Vector2((pose[0] as Vector3).x, (pose[0] as Vector3).z))
 					stats["bus_stops"] += 1
 				elif to_stop < 40.0:
 					top = minf(top, 1.5 + to_stop * 0.3)
@@ -713,7 +824,9 @@ func _setup_boats() -> void:
 	var cruise_at = null
 	for key in world.props.cells:
 		for rec in world.props.cells[key]:
-			if rec[0] == world.props.FERRY and ferry_at == null:
+			# (the ferry at the quay for Vestnes, east of the centre: not the one out at Hjertøya, which the
+			# sailing ferry started from before, far out and away over the edge of the map)
+			if rec[0] == world.props.FERRY and (ferry_at == null or (rec[1] as Transform3D).origin.distance_to(Vector3(510, 0, 68)) < (ferry_at as Transform3D).origin.distance_to(Vector3(510, 0, 68))):
 				ferry_at = rec[1]
 			if rec[0] == world.props.CRUISE:
 				cruise_at = rec[1]
@@ -731,7 +844,9 @@ func _setup_boats() -> void:
 				far = r
 				out = d
 		if far > 600.0:
-			_add_boat(world.props.FERRY, {"kind": "ferry", "a": from + out * 190.0, "b": from + out * minf(far - 100.0, 2300.0) + Vector2(-0.4, 0.9).normalized() * 2200.0,
+			var far_end: Vector2 = from + out * minf(far - 100.0, 2300.0) + Vector2(-0.4, 0.9).normalized() * 2200.0
+			far_end = far_end.clamp(Vector2(world.x0 + 300.0, world.z0 + 300.0), Vector2(world.x1 - 300.0, world.z1 - 200.0))      # (it turns inside the map)
+			_add_boat(world.props.FERRY, {"kind": "ferry", "a": from + out * 190.0, "b": far_end,
 				"t": 0.0, "v": 0.0, "going": true, "wait": 40.0, "top": 8.0, "reach": 26.0})
 	# small boats pottering about off the harbour
 	var made := 0
@@ -791,12 +906,21 @@ func _run_boats(delta: float, pp: Vector3) -> void:
 				b["v"] = 0.0
 			else:
 				var left: float = (total - b["t"]) if b["going"] else b["t"]
+				if float(b["v"]) == 0.0 and b["going"] and float(b["t"]) < 1.0 and get_parent().get("sound") != null:
+					get_parent().get("sound").play_at("ship_horn", Vector3(a.x, 8.0, a.y), 1.6)      # casting off
 				b["v"] = move_toward(b["v"], minf(b["top"], 0.6 + left * 0.06), 0.5 * delta)
 				b["t"] += b["v"] * delta * (1.0 if b["going"] else -1.0)
 				if (b["going"] and b["t"] >= total) or (not b["going"] and b["t"] <= 0.0):
 					b["t"] = clampf(b["t"], 0.0, total)
 					b["going"] = not b["going"]
 					b["wait"] = 90.0
+					if b["going"] and daytime != null and float(daytime.rate) > 0.0:
+						# back at Molde: it leaves by the clock, on the next hour or half hour that is at least
+						# half a minute away (an hour of the game's day is 100 seconds at the usual rate)
+						var per_hour: float = 100.0 / float(daytime.rate)
+						var leave: float = ceil((float(daytime.hours) + 30.0 / per_hour) * 2.0) / 2.0
+						b["wait"] = (leave - float(daytime.hours)) * per_hour
+						b["leaves"] = "%02d:%02d" % [int(leave) % 24, int(fposmod(leave, 1.0) * 60.0)]
 			pos = a.lerp(c, b["t"] / total)
 			fwd = (c - a).normalized() * (1.0 if b["going"] else -1.0)
 			speed = b["v"]

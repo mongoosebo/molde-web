@@ -4,6 +4,7 @@ render_mode cull_disabled, depth_draw_opaque;
 // A far tree: a picture of the tree (taken from its model when the game starts) on a flat card that turns
 // toward the camera about its upright axis. It leans a little with the wind, like the near trees.
 uniform sampler2D card : filter_linear_mipmap, repeat_disable;
+global uniform float snow;
 global uniform vec3 wind;
 global uniform float wetness;
 
@@ -26,6 +27,6 @@ void fragment() {
 	if (c.a < 0.5) {
 		discard;
 	}
-	ALBEDO = c.rgb * (1.0 - 0.2 * wetness);
+	ALBEDO = mix(c.rgb * (1.0 - 0.2 * wetness), vec3(0.84, 0.87, 0.92), snow * 0.40);
 	ROUGHNESS = 0.95;
 }

@@ -74,6 +74,13 @@ func _tuft() -> ArrayMesh:
 
 
 func _process(_delta: float) -> void:
+	var t0_ := Time.get_ticks_usec()
+	_run(_delta)
+	if world != null:
+		world.took("grass", t0_)
+
+
+func _run(_delta: float) -> void:
 	if world == null or amount == 0:
 		return
 	var pos: Vector3 = player.global_position

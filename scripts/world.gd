@@ -403,7 +403,17 @@ func _make_near_mesh() -> ArrayMesh:
 
 
 ## One cell of 1 m terrain: drawn from its own height texture, solid as a height field.
+## Where the time goes, for the benchmark (scripts/checks.gd): microseconds spent since the start in the jobs
+## that are done a piece at a time while the player moves.
+var spent := {}
+
+
+func took(what: String, since: int) -> void:
+	spent[what] = int(spent.get(what, 0)) + Time.get_ticks_usec() - since
+
+
 func _make_near(k: Vector2i) -> Node3D:
+	var t0 := Time.get_ticks_usec()
 	var data := _fine_cell(k)
 	var rng: Vector2 = _fine_range[k]
 	var node := Node3D.new()
@@ -431,6 +441,7 @@ func _make_near(k: Vector2i) -> Node3D:
 	body.add_child(col)
 	node.add_child(body)
 	_near_root.add_child(node)
+	took("ground", t0)
 	return node
 
 

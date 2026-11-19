@@ -45,6 +45,10 @@ night={
 "type": "float",
 "value": 0.0
 }
+snow={
+"type": "float",
+"value": 0.0
+}
 lit_share={
 "type": "float",
 "value": 0.015

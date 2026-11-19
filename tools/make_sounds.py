@@ -259,6 +259,23 @@ late = int(0.09 * SR)
 x[late:] += (np.sin(2 * np.pi * 110 * t[:n - late]) * np.exp(-t[:n - late] / 0.045) + 0.6 * noise(0.45, band(200, 1500))[:n - late] * env(n - late, 0.002, 0.03))
 save("door", x, "a car door", "a click, then a thud")
 
+# ---------------------------------------------------------------- the plan of 18 November: bus, horns, jobs, a crowd
+save("engine_bus", engine(2.0, 15.0, 6, 0.12, 0.55, 5), "the bus's diesel (loop)", "six cylinders, slow and dark")
+t = t_of(0.55)
+x = (np.sin(2 * np.pi * 420 * t) + np.sin(2 * np.pi * 525 * t) + 0.3 * np.sin(2 * np.pi * 840 * t) + 0.3 * np.sin(2 * np.pi * 1050 * t)) * np.minimum(t / 0.012, 1.0) * np.minimum((0.55 - t) / 0.05, 1.0)
+save("horn", x, "a car's horn", "two tones a third apart with their octaves", 0.7)
+t = t_of(2.6)
+x = sum(np.sin(2 * np.pi * f0 * t) * a for f0, a in ((98, 1.0), (147, 0.7), (196, 0.5), (294, 0.25))) * np.minimum(t / 0.15, 1.0) * np.minimum((2.6 - t) / 0.5, 1.0)
+save("ship_horn", x + 0.05 * np.resize(noise(2.6, band(80, 400)), len(t)), "the ferry's horn", "a low chord held for two seconds")
+t = t_of(1.4)
+x = sum(np.sin(2 * np.pi * f0 * np.maximum(t - d, 0)) * np.exp(-np.maximum(t - d, 0) / 0.45) * (t >= d) for f0, d in ((784, 0.0), (988, 0.12), (1175, 0.24)))
+save("chime", x, "a job done, or a sight found", "three bell tones going up", 0.5)
+t = t_of(0.5)
+save("tick", np.sin(2 * np.pi * 660 * t) * np.exp(-t / 0.12), "a goal reached on the way", "one short bell tone", 0.4)
+s = 10.0
+x = noise(s, lambda f: band(300, 2600)(f) * pink(f)) * (0.75 + 0.25 * swell(s, 3, 1.0)) + 0.35 * noise(s, band(1500, 5000)) * swell(s, 5, 1.0, 0.7) ** 2
+save("crowd", x, "a crowd at a match or a concert, from a way off (loop)", "voice-band noise swelling and falling", 0.6)
+
 with open(os.path.join(OUT, "CREDITS.md"), "w") as f:
     f.write("# Sounds\n\nEvery sound here is made by `tools/make_sounds.py` from noise and tones: nothing is recorded or taken from\n"
             "anywhere, so there is no licence to follow. They are part of this project, like its code.\n\n| file | what it is | how it is made |\n|---|---|---|\n")

@@ -12,6 +12,9 @@ const MercedesScript := preload("res://scripts/mercedes.gd")
 const BikeScript := preload("res://scripts/bike.gd")
 const DevtoolScript := preload("res://scripts/devtool.gd")
 const Paths := preload("res://scripts/paths.gd")
+const ChecksScript := preload("res://scripts/checks.gd")
+const BusDriveScript := preload("res://scripts/bus_drive.gd")
+const JobsScript := preload("res://scripts/jobs.gd")
 
 var world
 var player
@@ -27,6 +30,8 @@ var molde                           # scripts/molde.gd
 var sound                           # scripts/sound.gd
 var hud
 var devtool
+var bus                             # scripts/bus_drive.gd: the FRAM bus that can be driven
+var jobs                            # scripts/jobs.gd: jobs, sights, the ferry, where the player was
 
 const HELI_AT := Vector2(14.0, 50.0)
 
@@ -70,7 +75,7 @@ func _ready() -> void:
 	# What can be driven: an ATV, a white Volvo 740, a Honda Integra, a helicopter, a Mercedes estate and a
 	# bicycle. Where each stands is in place_vehicles(), which the reset uses too.
 	var made := []
-	for pair in [["ATV", AtvScript], ["Volvo", CarScript], ["Integra", IntegraScript], ["Helicopter", HeliScript], ["Mercedes", MercedesScript], ["Bicycle", BikeScript]]:
+	for pair in [["ATV", AtvScript], ["Volvo", CarScript], ["Integra", IntegraScript], ["Helicopter", HeliScript], ["Mercedes", MercedesScript], ["Bicycle", BikeScript], ["Bus", BusDriveScript]]:
 		var v := Node3D.new()
 		v.name = pair[0]
 		v.set_script(pair[1])
@@ -83,7 +88,8 @@ func _ready() -> void:
 	var merc: Node3D = made[4]
 	var bike: Node3D = made[5]
 	player.atv = atv
-	player.vehicles = [atv, car, integra, heli, merc, bike]
+	bus = made[6]
+	player.vehicles = [atv, car, integra, heli, merc, bike, bus]
 	place_vehicles()
 	sound = Node.new()
 	sound.name = "Sound"
@@ -130,6 +136,30 @@ func _ready() -> void:
 	menu.set_script(load("res://scripts/menu.gd"))
 	add_child(menu)
 	menu.setup(self, world, player, daytime, weather, sound)
+	place_bus()
+	jobs = Node.new()
+	jobs.name = "Jobs"
+	jobs.set_script(JobsScript)
+	add_child(jobs)
+	jobs.setup(self)
+	# back where the game was left (not in a check, which starts from the same place every time)
+	var was: Array = JobsScript.last_place()
+	if OS.get_cmdline_user_args().is_empty() and was.size() == 2:
+		var at: Vector3 = was[0]
+		if at.x > world.x0 + 50.0 and at.x < world.x1 - 50.0 and at.z > world.z0 + 50.0 and at.z < world.z1 - 50.0:
+			player.global_position = Vector3(at.x, maxf(at.y, world.height_at(at.x, at.z)) + 0.6, at.z)
+			player.yaw = was[1]
+			player.reset_physics_interpolation()
+			world.update_streaming(player.global_position)
+			world.flush(player.global_position)
+	# the newer checks live in scripts/checks.gd: --bench and those named there
+	for arg in OS.get_cmdline_user_args():
+		if ChecksScript.KNOWN.has(arg):
+			var ch := Node.new()
+			ch.set_script(ChecksScript)
+			add_child(ch)
+			ch.run(self, arg)
+			return
 	if "--perf" in OS.get_cmdline_user_args():
 		_perf_and_quit()
 		return
@@ -215,6 +245,23 @@ func place_vehicles() -> void:
 		_stand(v[5], bb[0], bb[1], 0.0, 0.07)
 
 
+## The bus stands at the bus square, by the kerb where its line starts, facing the way it goes.
+func place_bus() -> void:
+	if bus == null or traffic == null or traffic.buses.is_empty():
+		return
+	var line: Dictionary = traffic.line_points(1 if traffic.buses.size() > 1 else 0)
+	var way: PackedVector2Array = line["way"]
+	if way.size() < 12:
+		return
+	var a := way[4]
+	var fwd := (way[7] - way[4]).normalized()
+	var at := a + Vector2(-fwd.y, fwd.x) * 2.2
+	_stand(bus, at.x, at.y, atan2(-fwd.x, -fwd.y))
+	var y: float = world.detail.top_at(at.x, at.y)
+	if not is_nan(y):
+		bus.global_position.y = y
+
+
 func _stand(v: Node3D, x: float, z: float, turn: float, lift := 0.0) -> void:
 	v.global_transform = Transform3D(Basis(Vector3.UP, turn), Vector3(x, world.height_at(x, z) + lift, z))
 	v.reset_physics_interpolation()
@@ -243,6 +290,7 @@ func reset_game() -> void:
 	player._body.rotation = Vector3.ZERO
 	player.reset_physics_interpolation()
 	place_vehicles()
+	place_bus()
 	# the ground and the paving there before anyone can move, so nobody falls through
 	world.update_streaming(player.global_position)
 	world.flush(player.global_position)
@@ -267,6 +315,8 @@ func _axis(action: String, axis: JoyAxis, value: float) -> void:
 
 
 func _pad(action: String, button: JoyButton) -> void:
+	if not InputMap.has_action(action):
+		InputMap.add_action(action, 0.25)
 	var ev := InputEventJoypadButton.new()
 	ev.button_index = button
 	InputMap.action_add_event(action, ev)
@@ -298,6 +348,25 @@ func _setup_input() -> void:
 	_axis("look_right", JOY_AXIS_RIGHT_X, 1.0)
 	_pad("jump", JOY_BUTTON_A)
 	_pad("sprint", JOY_BUTTON_LEFT_STICK)
+	# jobs and the journal (scripts/jobs.gd), the view from the driver's seat
+	_key("job", [KEY_E])
+	_key("journal", [KEY_J])
+	_key("view", [KEY_Q])
+	# The rest of a gamepad: the triggers drive (right goes, left brakes and backs), RB sprints, LB takes the
+	# helicopter down, X takes a job, Back opens the journal, a press on the right stick changes the view, the
+	# cross sets the time and the weather, Start opens the menu (B closes it: that is Godot's own).
+	_axis("move_forward", JOY_AXIS_TRIGGER_RIGHT, 1.0)
+	_axis("move_back", JOY_AXIS_TRIGGER_LEFT, 1.0)
+	_pad("sprint", JOY_BUTTON_RIGHT_SHOULDER)
+	_pad("descend", JOY_BUTTON_LEFT_SHOULDER)
+	_pad("job", JOY_BUTTON_X)
+	_pad("journal", JOY_BUTTON_BACK)
+	_pad("view", JOY_BUTTON_RIGHT_STICK)
+	_pad("time_back", JOY_BUTTON_DPAD_LEFT)
+	_pad("time_on", JOY_BUTTON_DPAD_RIGHT)
+	_pad("weather", JOY_BUTTON_DPAD_UP)
+	_pad("reset", JOY_BUTTON_DPAD_DOWN)
+	_pad("ui_cancel", JOY_BUTTON_START)
 
 
 func _setup_environment() -> void:

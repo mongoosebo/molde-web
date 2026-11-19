@@ -40,10 +40,10 @@ var _dir := ""
 # The patch tool (P): squares of asphalt, of paving, or of bare ground laid where the crosshair points. Each is
 # written to tools/patches.jsonl, which tools/build_map.py reads: the patch is real after the next build of the
 # map. Until then it is shown as a flat square of the colour it will be.
-const PATCH_KINDS := ["asphalt", "paving", "none"]
-const PATCH_NAMES := ["asphalt", "paving", "remove (bare ground)"]
+const PATCH_KINDS := ["asphalt", "paving", "none", "gravel"]
+const PATCH_NAMES := ["asphalt", "paving", "grass (takes asphalt and paving away)", "gravel"]
 const PATCH_SIZES := [2.0, 4.0, 8.0, 16.0, 32.0]
-const PATCH_COLOURS := [Color(0.13, 0.13, 0.14), Color(0.55, 0.55, 0.54), Color(0.30, 0.42, 0.20)]
+const PATCH_COLOURS := [Color(0.13, 0.13, 0.14), Color(0.55, 0.55, 0.54), Color(0.30, 0.42, 0.20), Color(0.52, 0.47, 0.38)]
 var patching := false
 var _patch_kind := 0
 var _patch_size := 1
@@ -184,7 +184,7 @@ func _grid_add(grid: Dictionary, x: float, z: float, i: int) -> void:
 
 
 func _show_count() -> void:
-	_count.text = "Right mouse button: leave a note on what the crosshair points at  ·  P: patch tool (asphalt, paving)  ·  notes waiting: %d" % _saved
+	_count.text = "Right mouse button: leave a note on what the crosshair points at  ·  P: patch tool (asphalt, paving, grass, gravel)  ·  notes waiting: %d" % _saved
 
 
 ## Where the crosshair meets the ground, or null.
@@ -240,14 +240,47 @@ func _patch_square(at: Vector3, size: float, yaw: float, col: Color, only_edge: 
 
 
 func _patch_text() -> void:
-	_patch_line.text = "" if not patching else "PATCH TOOL   1 asphalt · 2 paving · 3 remove   [%s]      4–8 size   [%d m]      left mouse: lay it · Z: undo · P: done      laid: %d (real after the next map build)" % [
-		PATCH_NAMES[_patch_kind], int(PATCH_SIZES[_patch_size]), _patch_made.size()]
+	_patch_line.text = "" if not patching else "PATCH TOOL   1 asphalt · 2 paving · 3 grass · 4 gravel   [%s]      5–9 size   [%d m]      left mouse: lay it (hold to paint) · Z: undo · P: done      laid: %d, waiting for the next map build: %d" % [
+		PATCH_NAMES[_patch_kind], int(PATCH_SIZES[_patch_size]), _patch_made.size(), _patch_waiting.size() + _patch_made.size()]
+
+
+## What is marked in tools/patches.jsonl and not built into the map yet (the map says how many lines it has
+## taken: meta "patches_built"), shown as outlines in the colour of its kind while the tool is open.
+var _patch_waiting: Array = []
+var _patch_last = null                 # where the last square was laid while the button is held
+
+
+func _patch_show_waiting() -> void:
+	for n in _patch_waiting:
+		(n as Node).queue_free()
+	_patch_waiting.clear()
+	if not patching or not FileAccess.file_exists(_patch_path):
+		return
+	var lines := FileAccess.get_file_as_string(_patch_path).split("\n", false)
+	var mine := {}
+	for e in _patch_made:
+		mine[e[0]] = true
+	for i in range(int(world.meta.get("patches_built", lines.size())), lines.size()):      # (a map built before this was counted has taken them all)
+		if mine.has(lines[i]):
+			continue
+		var rec = JSON.parse_string(lines[i])
+		if rec == null:
+			continue
+		var at := Vector3(rec["x"], 0.0, rec["z"])
+		at.y = world.height_at(at.x, at.z)
+		var mi := MeshInstance3D.new()
+		mi.mesh = _patch_square(at, rec["size"], rec.get("yaw", 0.0), PATCH_COLOURS[maxi(PATCH_KINDS.find(rec["kind"]), 0)].lightened(0.35), true)
+		mi.position = at
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		world.add_child(mi)
+		_patch_waiting.append(mi)
 
 
 func _patch_lay() -> void:
 	var at = _patch_point()
 	if at == null:
 		return
+	_patch_last = at
 	var size: float = PATCH_SIZES[_patch_size]
 	var rec := {"kind": PATCH_KINDS[_patch_kind], "x": snappedf(at.x, 0.1), "z": snappedf(at.z, 0.1), "size": size, "yaw": snappedf(player.yaw, 0.01),
 		"time": Time.get_datetime_string_from_system()}
@@ -289,6 +322,12 @@ func _process(delta: float) -> void:
 		if at != null:
 			_patch_frame.mesh = _patch_square(at, PATCH_SIZES[_patch_size], player.yaw, Color(1.0, 0.85, 0.1), true)
 			_patch_frame.global_position = at
+			# held down: another square each time the crosshair has moved most of a square on
+			if _patch_last != null and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+				if Vector2(at.x - _patch_last.x, at.z - _patch_last.z).length() > PATCH_SIZES[_patch_size] * 0.7:
+					_patch_lay()
+		if not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+			_patch_last = null
 	if _toast_time > 0.0:
 		_toast_time -= delta
 		if _toast_time <= 0.0:
@@ -311,15 +350,16 @@ func _input(event: InputEvent) -> void:
 		if event.keycode == KEY_P:
 			patching = not patching
 			_patch_frame.visible = false
+			_patch_show_waiting()
 			_patch_text()
 			get_viewport().set_input_as_handled()
 			return
 		if patching:
 			var k: int = event.keycode
-			if k >= KEY_1 and k <= KEY_3:
+			if k >= KEY_1 and k <= KEY_4:
 				_patch_kind = k - KEY_1
-			elif k >= KEY_4 and k <= KEY_8:
-				_patch_size = k - KEY_4
+			elif k >= KEY_5 and k <= KEY_9:
+				_patch_size = k - KEY_5
 			elif k == KEY_Z:
 				_patch_undo()
 			else:

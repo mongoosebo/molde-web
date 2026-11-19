@@ -38,6 +38,19 @@ var _ripples: CheckBox
 var _traffic_buttons: Array = []
 var _grass_buttons: Array = []
 var _confirm: Panel
+var _season_buttons: Array = []
+var _occasion_buttons: Array = []
+var _slippery: CheckBox
+var occasion := 0                        # 0 an ordinary day, 1 the jazz festival, 2 a match at the stadium
+
+
+func _apply_occasion() -> void:
+	if occasion == 1:
+		daytime.day = 198                                   # the middle of the festival week in July
+	elif daytime.day >= 196 and daytime.day <= 202:
+		daytime.day = 258
+	main.molde.match_day = occasion == 2
+	daytime.apply()
 var _dragging := false
 var _drag_last := 0.0
 var _save_in := -1.0
@@ -343,6 +356,43 @@ func _build() -> void:
 		world.ripples.enabled = on
 		_later())
 	grid.add_child(_ripples)
+	# the season and the occasion (the plan of 18 November, part 6)
+	grid.add_child(_label("Season", 14, 0.85))
+	var zrow := HBoxContainer.new()
+	zrow.add_theme_constant_override("separation", 6)
+	for i in 2:
+		var b := _button(["Summer", "Winter"][i], 74)
+		b.pressed.connect(func():
+			weather.winter = i == 1
+			_later())
+		zrow.add_child(b)
+		_season_buttons.append(b)
+	_slippery = CheckBox.new()
+	_slippery.text = "Slippery roads"
+	_slippery.focus_mode = Control.FOCUS_NONE
+	_slippery.toggled.connect(func(on):
+		weather.slippery = on
+		_later())
+	zrow.add_child(_slippery)
+	grid.add_child(zrow)
+	grid.add_child(_label("Today is", 14, 0.85))
+	var orow := HBoxContainer.new()
+	orow.add_theme_constant_override("separation", 6)
+	for i in 3:
+		var b := _button(["An ordinary day", "Moldejazz", "A match day"][i], 74)
+		b.pressed.connect(func():
+			occasion = i
+			_apply_occasion()
+			_later())
+		orow.add_child(b)
+		_occasion_buttons.append(b)
+	grid.add_child(orow)
+	grid.add_child(_label("To do", 14, 0.85))
+	var jb := _button("Jobs and sights  (J)", 170)
+	jb.pressed.connect(func():
+		close()
+		main.jobs.toggle_journal())
+	grid.add_child(jb)
 
 	# reset
 	var foot := HBoxContainer.new()
@@ -434,6 +484,15 @@ func open() -> void:
 	_root.visible = true
 	_confirm.visible = false
 	_refresh()
+	# with a gamepad the buttons are stepped through with the cross or the stick, and A presses one
+	var pad := not Input.get_connected_joypads().is_empty()
+	var first: Button = null
+	for b in _root.find_children("*", "Button", true, false):
+		(b as Button).focus_mode = Control.FOCUS_ALL if pad else Control.FOCUS_NONE
+		if first == null and not (b is CheckBox):
+			first = b
+	if pad and first != null:
+		first.grab_focus()
 
 
 func close() -> void:
@@ -512,6 +571,10 @@ func _refresh() -> void:
 	for i in 3:
 		_light(_traffic_buttons[i], traffic == i)
 		_light(_grass_buttons[i], grass == i)
+		_light(_occasion_buttons[i], occasion == i)
+	for i in 2:
+		_light(_season_buttons[i], weather.winter == (i == 1))
+	_slippery.set_pressed_no_signal(weather.slippery)
 
 
 func save() -> void:
@@ -530,6 +593,9 @@ func save() -> void:
 	cf.set_value("weather", "kind", weather.kind)
 	cf.set_value("weather", "changing", weather.changing)
 	cf.set_value("weather", "wind", weather.wind_set)
+	cf.set_value("world", "winter", weather.winter)
+	cf.set_value("world", "slippery", weather.slippery)
+	cf.set_value("world", "occasion", occasion)
 	cf.save(FILE)
 
 
@@ -544,6 +610,11 @@ func _load() -> void:
 	grass = cf.get_value("world", "grass", grass)
 	main.grass.amount = grass
 	world.ripples.enabled = cf.get_value("world", "ripples", true)
+	weather.winter = cf.get_value("world", "winter", false)
+	weather.slippery = cf.get_value("world", "slippery", false)
+	occasion = cf.get_value("world", "occasion", 0)
+	if occasion == 2:
+		main.molde.match_day = true
 	var args := " ".join(OS.get_cmdline_user_args())
 	if not "--time=" in args:                                 # (a check that sets the time or the weather keeps what it set)
 		daytime.hours = cf.get_value("time", "hours", daytime.hours)
