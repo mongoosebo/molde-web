@@ -87,7 +87,10 @@ func _load_roads() -> void:
 				d += pts[k].distance_to(pts[k - 1])
 			dist.append(d)
 		var w := ways.size()
-		ways.append([half, kind, mark, pts, nrm, fl, fr, dist, hs, ys])
+		# (a road bridge: the fourth number of its first point says how wide the sidewalk is on each side of the
+		# deck, in tenths of a metre: a thousand times the left one and the right one)
+		var walk: float = data[i - n * 5 + 3] if kind == 4 and n > 0 else 0.0
+		ways.append([half, kind, mark, pts, nrm, fl, fr, dist, hs, ys, walk])
 		for k in n - 1:
 			var mid := (pts[k] + pts[k + 1]) * 0.5
 			var key := cell_of(mid.x, mid.y)
@@ -710,6 +713,26 @@ func _bridge_segment(mb, cv: PackedVector3Array, way: Array, i: int) -> void:
 	var b1 := c1 - o1 * half
 	_solid(mb, cv, "asphalt" if road else ("trim" if conc else "clad"), a0, b0, b1, a1, up, ASPHALT if road else (CONCRETE.lightened(0.08) if conc else TIMBER))
 	mb.quad("trim", a0 - thick, b0 - thick, b1 - thick, a1 - thick, Vector3.DOWN, body)
+	# the sidewalks of the road carry on over the deck, a kerb's height over its asphalt, so that they do not
+	# stop dead at each end of the bridge (asked for at Romsdalsgata, 18 Nov)
+	if road and way.size() > 10 and float(way[10]) > 0.5:
+		var code := int(float(way[10]))
+		var kerb := Vector3(0, 0.13, 0)
+		for sg in [1.0, -1.0]:
+			var sgn: float = sg
+			var wide: float = float(code / 1000 if sgn > 0.0 else code % 1000) / 10.0
+			if wide < 0.4:
+				continue
+			var e0: Vector3 = c0 + o0 * (half * sgn) + kerb
+			var e1: Vector3 = c1 + o1 * (half * sgn) + kerb
+			var i0: Vector3 = c0 + o0 * ((half - wide) * sgn) + kerb
+			var i1: Vector3 = c1 + o1 * ((half - wide) * sgn) + kerb
+			if sgn > 0.0:
+				_solid(mb, cv, "sidewalk", e0, i0, i1, e1, up, SIDEWALK)
+				mb.quad("trim", i0, i0 - kerb, i1 - kerb, i1, -o0, KERB)
+			else:
+				_solid(mb, cv, "sidewalk", i0, e0, e1, i1, up, SIDEWALK)
+				mb.quad("trim", i1, i1 - kerb, i0 - kerb, i0, o0, KERB)
 	if road and (mark == 1 or mark == 2) and int(dist[i] / 3.0) % 4 == 0:
 		var hair := Vector3(0, 0.015, 0)
 		mb.quad("mark", c0 + hair + o0 * 0.06, c0 + hair - o0 * 0.06, c1 + hair - o1 * 0.06, c1 + hair + o1 * 0.06, up, YELLOW)

@@ -2,7 +2,7 @@ extends Node
 ## Checks that run the game by themselves and quit (`./run.sh -- --bench` and so on). The older ones are in
 ## main.gd; the ones added with the plan of 18 November are here. tools/check.sh runs them all in turn.
 
-const KNOWN := ["--bench", "--jobs", "--winter", "--lamps", "--film", "--indoors"]
+const KNOWN := ["--bench", "--jobs", "--winter", "--lamps", "--film", "--indoors", "--bridges"]
 
 var m                               # main.gd
 
@@ -23,6 +23,8 @@ func run(main, what: String) -> void:
 			await _film()
 		"--indoors":
 			await _indoors()
+		"--bridges":
+			await _bridges()
 	get_tree().quit()
 
 
@@ -590,3 +592,113 @@ func _indoors() -> void:
 	await _frames(20)
 	print("INDOORS out again at ", player.global_position, ", ", snappedf(player.global_position.distance_to(from_where), 0.1), " m from where they went in")
 	print("INDOORS ", "OK" if not fell and ok_out and not ind.inside else "PROBLEMS")
+
+
+## `--bridges`: is the road whole where it goes onto a bridge and off it? At both ends of every bridge (road
+## bridges and footbridges), rays are sent down across the whole width at steps from 1 m on the deck to 2.5 m
+## beyond its end. Each says what it met first (the deck or paving: good; the bare ground or nothing: a gap) and
+## how high. Counted per end: places where the ground shows, and the largest step in height from one ray to
+## the next along the road. The worst ends are photographed from above (data/bridge_*.png).
+func _bridges() -> void:
+	var world = m.world
+	var player = m.player
+	var ends: Array = []
+	for w in world.detail.ways.size():
+		var way: Array = world.detail.ways[w]
+		if int(way[1]) != 4:
+			continue
+		var pts: PackedVector2Array = way[3]
+		var hs: PackedFloat32Array = way[8]
+		if pts.size() < 2:
+			continue
+		for e in 2:
+			var at: Vector2 = pts[0] if e == 0 else pts[pts.size() - 1]
+			var inner: Vector2 = pts[1] if e == 0 else pts[pts.size() - 2]
+			if at.length() > float(_arg("--within", "100000")) or float(way[0]) * 2.0 < float(_arg("--wider", "0")):
+				continue
+			ends.append({"way": w, "half": float(way[0]), "at": at, "out": (at - inner).normalized(), "y": hs[0] if e == 0 else hs[hs.size() - 1]})
+	print("BRIDGES ", ends.size(), " ends of bridges")
+	var bad: Array = []
+	for en in ends:
+		var at: Vector2 = en["at"]
+		var out: Vector2 = en["out"]
+		var side := Vector2(out.y, -out.x)
+		var half: float = en["half"]
+		await _go(at - out * 2.0, 0.4)
+		player.global_position.y = float(en["y"]) + 0.5
+		await _frames(6)
+		for k in 4:
+			await get_tree().physics_frame
+		var space: PhysicsDirectSpaceState3D = player.get_world_3d().direct_space_state
+		var gaps := 0
+		var step := 0.0
+		var where := ""
+		var road: bool = half > 2.0
+		# (a road bridge is judged over its carriageway, clear of the parapets and of a sidewalk beside it; a
+		# footbridge that goes on as a gravel path has bare ground beyond it by right, and is only told of)
+		var reach: float = (half - 1.2) if road else (half - 0.15)
+		var rows := maxi(3, int(reach / 0.5) * 2 + 1)
+		var wet_end := false
+		for r in rows:
+			var off := lerpf(-reach, reach, float(r) / float(rows - 1))
+			var deck_y := NAN
+			for d in [-1.0, -0.3, 0.05, 0.25, 0.5, 0.8, 1.2, 1.8, 2.5]:
+				var q: Vector2 = at + out * float(d) + side * off
+				var ray := PhysicsRayQueryParameters3D.create(Vector3(q.x, float(en["y"]) + 2.5, q.y), Vector3(q.x, float(en["y"]) - 6.0, q.y))
+				ray.exclude = [player.get_rid()]
+				var hit := space.intersect_ray(ray)
+				var what := "nothing"
+				var y := NAN
+				if not hit.is_empty():
+					y = hit["position"].y
+					var path := str((hit["collider"] as Node).get_path())
+					what = "ground" if path.contains("Terrain") else "paved"
+				if OS.get_cmdline_user_args().has("--profile") and (r == rows / 2 or r == 0 or r == rows - 1):
+					print("   off %5.1f  %5.2f m beyond: %-7s %s" % [off, d, what, ("%+.2f" % (y - float(en["y"]))) if not is_nan(y) else ""])
+				if float(d) < 0.0:
+					if what == "paved":
+						deck_y = y
+					continue
+				if r == rows / 2 and is_equal_approx(float(d), 1.2) and (what == "nothing" or (not is_nan(y) and y < float(en["y"]) - 1.5)):
+					wet_end = true
+				if what != "paved":
+					gaps += 1
+					if where == "":
+						where = "%s %.1f m beyond, %.1f m off the middle" % [what, d, off]
+				elif not is_nan(deck_y) and float(d) <= 1.2 and absf(y - deck_y) > step:
+					step = absf(y - deck_y)
+		en["gaps"] = gaps
+		en["step"] = step
+		if wet_end:
+			print("BRIDGES end at %7.1f %7.1f (%s): ends over the water, not judged" % [at.x, at.y, world.locate(at.x, at.y)["street"]])
+			continue
+		var paved_road: bool = road and gaps < rows * 4                 # (a gravel road has no paving to be whole)
+		if paved_road and (gaps > 0 or step > 0.12):
+			bad.append(en)
+			print("BRIDGES end at %7.1f %7.1f (%s, %.1f m wide): ground showing at %d points (%s); the road within 1.2 m stands up to %.2f m off the deck" % [at.x, at.y, world.locate(at.x, at.y)["street"], half * 2.0, gaps, where, step])
+		elif not road and step > 0.25:
+			print("BRIDGES footbridge end at %7.1f %7.1f: the path within 1.2 m stands up to %.2f m off the deck (told of, not counted)" % [at.x, at.y, step])
+	bad.sort_custom(func(a, b): return int(a["gaps"]) * 10.0 + float(a["step"]) * 100.0 > int(b["gaps"]) * 10.0 + float(b["step"]) * 100.0)
+	var shots := 0
+	for en in bad.slice(0, 12):
+		var at2: Vector2 = en["at"]
+		var out2: Vector2 = en["out"]
+		await _go(at2 + out2 * 6.0, 0.4)
+		await _frames(10)
+		var cam: Camera3D = get_viewport().get_camera_3d()
+		var top := Camera3D.new()
+		add_child(top)
+		top.global_position = Vector3(at2.x + out2.x * 9.0, float(en["y"]) + 9.0, at2.y + out2.y * 9.0)
+		top.look_at(Vector3(at2.x, float(en["y"]), at2.y))
+		top.fov = 60.0
+		top.current = true
+		m.hud.visible = false
+		await RenderingServer.frame_post_draw
+		await RenderingServer.frame_post_draw
+		get_viewport().get_texture().get_image().save_png("res://data/bridge_%02d.png" % shots)
+		print("BRIDGES picture bridge_%02d.png: %.1f %.1f %s" % [shots, at2.x, at2.y, world.locate(at2.x, at2.y)["street"]])
+		cam.current = true
+		top.queue_free()
+		shots += 1
+	print("BRIDGES ends of paved road bridges with a gap or a step: %d (of %d ends of all bridges)" % [bad.size(), ends.size()])
+	print("BRIDGES ", "OK" if bad.is_empty() else "PROBLEMS: %d" % bad.size())

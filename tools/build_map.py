@@ -1597,6 +1597,16 @@ if os.path.exists(_apath):
         _auto.append(_g)
     if _auto:
         _au = unary_union(_auto).difference(side.buffer(0.05)).difference(bld_union.buffer(0.3)).intersection(map_box)
+        # never on a square: Rådhusplassen and its surroundings have their own floor of stone, and the squares and
+        # walking streets the map draws as areas are not asphalt either (splashes of asphalt lay on Rådhusplassen
+        # after the first build with this: 19 Nov)
+        _not = [SPoly(q).buffer(0).buffer(3.0) for _ped, q in road_areas if _ped and len(q) >= 3]
+        if plaza_poly is not None:
+            _not.append(plaza_poly.buffer(30.0))
+        if _not:
+            _a_was = _au.area
+            _au = _au.difference(unary_union(_not))
+            print("  found asphalt kept off squares and walking streets: %d m2" % (_a_was - _au.area))
         _au = _au.buffer(-0.8, quad_segs=3).buffer(0.8, quad_segs=3)
         road_all = unary_union([road_all, _au])
         print("  asphalt found from the laser ground and satellite pictures: %d places, %d m2" % (len(_auto), _au.area))
@@ -1733,12 +1743,46 @@ _onp = unary_union([road_laid, side])
 _onp_wide = _onp.buffer(0.9, quad_segs=2)
 shapely.prepare(_onp); shapely.prepare(_onp_wide)
 _ro, _out, _i, _n_cut, _n_gone = np.asarray(road_out, np.float64), [], 0, 0, 0
+_n_walks = 0
 while _i + 4 <= len(_ro):
     _n = int(_ro[_i])
     _head, _rows = _ro[_i:_i + 4], _ro[_i + 4:_i + 4 + _n * 5].reshape(_n, 5)
     _i += 4 + _n * 5
     if int(_head[2]) == 3:
         _n_gone += 1
+        continue
+    if int(_head[2]) == 4 and _head[1] > 2.0 and _n >= 2:
+        # a road bridge: how wide the sidewalk is on each side where the road comes onto it, so that the game
+        # can carry it on over the deck (the fourth number of the first point: tenths of a metre, a thousand
+        # times the left one and the right one). A sidewalk at one end only is carried over all the same.
+        _hf = float(_head[1])
+        _wide = [0.0, 0.0]
+        for _e in (0, 1):
+            _p = _rows[0, :2] if _e == 0 else _rows[-1, :2]
+            _q = _rows[1, :2] if _e == 0 else _rows[-2, :2]
+            _t = (_q - _p) if _e == 0 else (_p - _q)             # the way the deck's line runs
+            _t = _t / max(float(np.hypot(*_t)), 1e-6)
+            _lf = np.array([_t[1], -_t[0]])                      # (as scripts/detail.gd has it: its "left")
+            _o = -_t if _e == 0 else _t                          # out of the deck at this end
+            for _k, _sg in enumerate((1.0, -1.0)):
+                _ss = np.arange(_hf - 0.15, 0.0, -0.25)
+                _pts = _p[None, :] + _o[None, :] * 0.8 + _lf[None, :] * (_ss[:, None] * _sg)
+                _on = shapely.contains_xy(side, _pts[:, 0], _pts[:, 1])
+                _run = 0
+                _started = False
+                for _wi, _v in enumerate(_on):
+                    if _v:
+                        _started = True
+                        _run = _wi + 1
+                    elif _started or _wi >= 3:                    # (must begin within 0.75 m of the deck's edge)
+                        break
+                if _started:
+                    _wide[_k] = max(_wide[_k], min(_run * 0.25 + 0.15, _hf - 2.6))
+        _rows = _rows.copy()
+        _rows[0, 3] = round(max(_wide[0], 0.0) * 10) * 1000 + round(max(_wide[1], 0.0) * 10)
+        if _rows[0, 3] > 0:
+            _n_walks += 1
+        _out.append(_head); _out.append(_rows.ravel())
         continue
     if int(_head[2]) != 7 or _n < 2:
         _out.append(_head); _out.append(_rows.ravel())
@@ -1762,6 +1806,7 @@ while _i + 4 <= len(_ro):
         _out.append(np.array([len(_run), _head[1], _head[2], _head[3]])); _out.append(_run.ravel())
 np.concatenate(_out).astype(np.float32).tofile(os.path.join(OUT, "roads.bin"))
 print("  gravel paths cut at the edge of paving:", _n_cut, " paved path ribbons no longer drawn:", _n_gone)
+print("  road bridges with a sidewalk carried over the deck:", _n_walks)
 
 # Hairline slits: where two paved outlines pass within a few centimetres of each other without touching (or
 # touch without being joined), the ground would show as a thin line between them. The paving is closed over
@@ -2170,6 +2215,48 @@ if _low.any():
     del _dry, _wd, _hd
 print("  paving brought up out of the water:", int(_low.sum()), "m2")
 del _low
+# Where a road goes onto a bridge, and off it: the road must meet the end of the deck at the deck's own height,
+# over its whole width. It did not: the paving takes its height from the ground at every 2.5 m, and the nearest
+# such point in under the deck lay in the river's channel, so the last metre of road before every bridge sagged
+# toward it (0.2 to 1.1 m at Romsdalsgata, Strandgata and Øvre veg: ./run.sh -- --bridges, 19 Nov; asked for
+# many times in the notes as "gaps in the asphalt at the bridges"). So: the ground in under each end of a deck
+# is brought up to just under the deck for as far as a paving triangle can reach (an abutment; the channel is
+# open between the two), and the ground of the road for 4 m before the deck is eased to the deck's height.
+_n_ends = 0
+for dk in road_decks:
+    _st, _hs, _poly, _half = dk
+    _len = LineString(_st).length
+    if _len < 2.0:
+        continue
+    _in_reach = min(3.6, 0.35 * _len)
+    for _end in (0, 1):
+        _p = np.asarray(_st[0] if _end == 0 else _st[-1], float)
+        _q = np.asarray(_st[1] if _end == 0 else _st[-2], float)
+        _out = (_p - _q) / max(float(np.hypot(*(_p - _q))), 1e-6)
+        _sd = np.array([_out[1], -_out[0]])
+        _h = float(_hs[0] if _end == 0 else _hs[-1])
+        _r = _half + 7.0
+        _i0, _i1 = max(int(_p[0] - _r - X0), 0), min(int(_p[0] + _r - X0) + 2, FW)
+        _j0, _j1 = max(int(_p[1] - _r - Z0), 0), min(int(_p[1] + _r - Z0) + 2, FH)
+        if _i1 <= _i0 or _j1 <= _j0:
+            continue
+        _gx, _gz = np.meshgrid(X0 + np.arange(_i0, _i1, dtype=float), Z0 + np.arange(_j0, _j1, dtype=float))
+        _d = (_gx - _p[0]) * _out[0] + (_gz - _p[1]) * _out[1]          # beyond the end of the deck (in under it: negative)
+        _s = (_gx - _p[0]) * _sd[0] + (_gz - _p[1]) * _sd[1]
+        _was = H1[_j0:_j1, _i0:_i1]
+        _before = (_d > 0.0) & (_d <= 4.0) & (np.abs(_s) <= _half + 0.6)
+        if not _before.any() or float(np.median(_was[_before])) < 0.9:
+            continue                                       # (a ramp that ends in the water: nothing to meet)
+        _new = _was.copy()
+        _under_end = (_d <= 0.0) & (_d >= -_in_reach) & (np.abs(_s) <= _half + 1.0)
+        _new[_under_end] = _deck_height(_st, _hs, _gx, _gz)[_under_end] - 0.06
+        _t = np.clip(_d / 4.0, 0.0, 1.0)
+        _t = _t * _t * (3.0 - 2.0 * _t)
+        _ease = _before & (_was > 0.5)
+        _new[_ease] = ((_h - 0.04) * (1.0 - _t) + _was * _t)[_ease]      # (the asphalt lies 0.10 over its ground, the deck 0.06 over its line)
+        H1[_j0:_j1, _i0:_i1] = _new.astype(np.float32)
+        _n_ends += 1
+print("  ends of road bridges where the road was brought to the deck's height:", _n_ends)
 H1 = (np.clip(np.round((H1 - H_OFFSET) / H_SCALE), 0, 65535) * H_SCALE + H_OFFSET).astype(np.float32)      # as the game will read it
 # Where a river's last stretch to the fjord stands dry above sea level (the laser saw a bank there), a channel is
 # cut down under the sea's surface so that the water in the river's mouth is the sea's own. Paving is left alone.
