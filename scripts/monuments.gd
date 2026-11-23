@@ -14,14 +14,21 @@ const SEILET_BASE := {
 func build_all(w, meta: Dictionary) -> void:
 	build(w, meta.get("landmarks", []), meta.get("plaza", []))
 	_mats["copper"] = _plain(Color(0.30, 0.50, 0.43), 0.55, 0.35)
+	# the cathedral's roof is red tile (photos, 19 Nov), not copper: the same red as before, now with the tiles' own
+	# courses and shadows in it; and its spire copper sheet gone nearly black, with its standing seams (note of 20 Nov)
+	_mats["church_tile"] = _textured("rooftile", Color(0.74, 0.31, 0.19) / 0.75, 1.6, 0.85)
+	_mats["spire"] = _textured("seam", Color(0.19, 0.25, 0.23) / 0.79, 2.4, 0.55)
+	_mats["spire"].metallic = 0.3
 	_mats["glass_blue"] = _plain(Color(0.09, 0.15, 0.20), 0.07, 0.9)
+	_mats["sail_glass"] = _plain(Color(0.30, 0.45, 0.57), 0.08, 0.85)      # Seilet is glass from top to bottom, sky-blue in daylight (photos, 19 Nov)
+	_mats["sail_line"] = _plain(Color(0.55, 0.62, 0.68), 0.35, 0.6)
 	_mats["steel"] = _plain(Color(0.62, 0.64, 0.66), 0.45, 0.6)
 	_mats["seat_blue"] = _plain(Color(0.07, 0.20, 0.50), 0.8)
 	_mats["pitch"] = _plain(Color(0.13, 0.33, 0.12), 1.0)
 	_mats["line"] = _plain(Color(0.90, 0.90, 0.88), 0.9)
 	_mats["granite"] = _textured("plaster", Color(0.80, 0.80, 0.78), 2.0, 0.8)
 	_mats["granite_light"] = _textured("plaster", Color(0.90, 0.90, 0.88), 2.0, 0.8)
-	_mats["roof_dark"] = _plain(Color(0.19, 0.20, 0.22), 0.5, 0.5)
+	_mats["roof_dark"] = _plain(Color(0.40, 0.42, 0.45), 0.5, 0.5)      # (the stadium roof is grey zinc, not black: photos, 19 Nov)
 	for lm in meta.get("landmarks", []):
 		var flat: Array = lm["pts"]
 		var poly := PackedVector2Array()
@@ -188,12 +195,15 @@ func _build_domkirke(ymin: float, ymax: float) -> void:
 	var yb := ymin - 1.5
 	var eave := 14.0
 	var ridge := 27.0
-	_gable_hall(mb, c, u, hl, hw, yb, yf, eave, ridge, "plaster_white", "copper", [5.4, 1.5, 3.0, 12.4])
+	_gable_hall(mb, c, u, hl, hw, yb, yf, eave, ridge, "plaster_white", "church_tile", [5.4, 1.5, 3.0, 12.4])
 
 	# west front: the main door under a tall window
 	var wf := _face(c - u * hl - v * hw, c - u * hl + v * hw, -u)
 	mb.box("door", wf.p(hw, yf + 2.0, -0.06), wf.t, Vector3.UP, wf.n, Vector3(1.6, 2.0, 0.08))
-	mb.box("glass", wf.p(hw, yf + 12.5, -0.05), wf.t, Vector3.UP, wf.n, Vector3(1.3, 7.0, 0.06))
+	# (a round window high in the gable, not a tall one: photos, 19 Nov)
+	mb.box("white", wf.p(hw, yf + 15.0, -0.05), wf.t, Vector3.UP, wf.n, Vector3(1.75, 1.75, 0.05))
+	mb.box("glass", wf.p(hw, yf + 15.0, -0.08), (wf.t + Vector3.UP).normalized(), (Vector3.UP - wf.t).normalized(), wf.n, Vector3(1.05, 1.05, 0.06))
+	mb.box("glass", wf.p(hw, yf + 15.0, -0.08), wf.t, Vector3.UP, wf.n, Vector3(1.05, 1.05, 0.06))
 	mb.box("white", wf.p(hw, yf + 4.25, -0.5), wf.t, Vector3.UP, wf.n, Vector3(2.6, 0.12, 0.6))
 
 	# north aisle: the roof carries on down over it
@@ -203,7 +213,7 @@ func _build_domkirke(ymin: float, ymax: float) -> void:
 	var ay := eave - aw * (ridge - eave) / hw
 	var af := _face(c + u * a0 - v * (hw + aw), c + u * a1 - v * (hw + aw), -v)
 	_slit_wall(mb, af, yb, yf + ay, "plaster_white", "glass", 3.0, 1.0, yf + 1.4, yf + ay - 0.6)
-	_quad_auto(mb, "copper", af.p(-0.3, yf + ay - 0.2, -0.3), af.p(af.length + 0.3, yf + ay - 0.2, -0.3),
+	_quad_auto(mb, "church_tile", af.p(-0.3, yf + ay - 0.2, -0.3), af.p(af.length + 0.3, yf + ay - 0.2, -0.3),
 		_v3(c + u * (a1 + 0.3) - v * hw, yf + eave), _v3(c + u * (a0 - 0.3) - v * hw, yf + eave), Vector3.UP)
 	for s in [a0, a1]:
 		var e := _face(c + u * s - v * hw, c + u * s - v * (hw + aw), u * (1.0 if s == a1 else -1.0))
@@ -221,7 +231,7 @@ func _build_domkirke(ymin: float, ymax: float) -> void:
 		var p1 := ac + Vector2(cos(t1), sin(t1)) * ar
 		var nm := Vector3(cos((t0 + t1) * 0.5), 0, sin((t0 + t1) * 0.5))
 		mb.quad("plaster_white", _v3(p0, yb), _v3(p1, yb), _v3(p1, yf + 13.0), _v3(p0, yf + 13.0), nm)
-		mb.tri("copper", _v3(p0, yf + 13.0), _v3(p1, yf + 13.0), _v3(ac, yf + 16.4), (nm * 0.4 + Vector3.UP).normalized())
+		mb.tri("church_tile", _v3(p0, yf + 13.0), _v3(p1, yf + 13.0), _v3(ac, yf + 16.4), (nm * 0.4 + Vector3.UP).normalized())
 
 	# parish wing and the passage to it
 	var pc := c + u * 20.3 - v * 18.4
@@ -230,7 +240,7 @@ func _build_domkirke(ymin: float, ymax: float) -> void:
 	var wu := Vector2(0.966, 0.259)
 	var wc := Vector2(77.6, -115.6)
 	var wf2: float = maxf(yf, world.height_at(wc.x, wc.y) + 0.3)
-	_gable_hall(mb, wc, wu, 9.6, 4.2, yb, wf2, 6.4, 10.8, "plaster_white", "copper", [3.2, 1.1, 1.2, 5.0])
+	_gable_hall(mb, wc, wu, 9.6, 4.2, yb, wf2, 6.4, 10.8, "plaster_white", "church_tile", [3.2, 1.1, 1.2, 5.0])
 	_commit(mb, "Domkirke")
 
 	_box_body(_v3(c, (yb + yf + eave + 5.0) * 0.5), u, Vector3(hl * 2.0, yf + eave + 5.0 - yb, hw * 2.0))
@@ -248,7 +258,7 @@ func _build_domkirke(ymin: float, ymax: float) -> void:
 	add_child(body)
 
 
-## The free-standing bell tower: a white shaft with a copper spire, 50 m to the tip.
+## The free-standing bell tower: a white shaft with upright ribs and a dark spire, 50 m to the tip.
 func _build_bell_tower(poly: PackedVector2Array, ymin: float) -> void:
 	var mb := MB.new()
 	var centre := Vector2.ZERO
@@ -265,6 +275,10 @@ func _build_bell_tower(poly: PackedVector2Array, ymin: float) -> void:
 		var f := _face(a, b, (a + b) * 0.5 - centre)
 		_slit_wall(mb, f, yb, ys, "plaster_white", "dark", f.length / 3.0, 0.8, ys - 7.5, ys - 1.6)
 		_cq(cv, f.p(0, yb), f.p(f.length, yb), f.p(f.length, ys), f.p(0, ys))
+		# the upright ribs that run up the shaft between its openings, and the band under the spire
+		for r in 4:
+			mb.box("white", f.p(f.length * float(r) / 3.0, (ymin + ys) * 0.5, -0.12), f.t, Vector3.UP, f.n, Vector3(0.16, (ys - ymin) * 0.5, 0.14))
+		mb.box("white", f.p(f.length * 0.5, ys - 0.5, -0.2), f.t, Vector3.UP, f.n, Vector3(f.length * 0.5 + 0.2, 0.5, 0.22))
 		if i == 0:
 			mb.box("door", f.p(f.length * 0.5, ymin + 1.6, -0.05), f.t, Vector3.UP, f.n, Vector3(0.8, 1.6, 0.06))
 		var o := 0.35
@@ -274,7 +288,7 @@ func _build_bell_tower(poly: PackedVector2Array, ymin: float) -> void:
 		var nrm := (eb - ea).cross(apex - ea).normalized()
 		if nrm.y < 0.0:
 			nrm = -nrm
-		mb.tri("copper", ea, eb, apex, nrm)
+		mb.tri("spire", ea, eb, apex, nrm)
 		mb.tri("white", ea, eb, _v3(centre, ys), Vector3.DOWN)
 	_commit(mb, "Klokketarn")
 	_mesh_body(cv)
@@ -298,9 +312,9 @@ func _build_seilet(poly: PackedVector2Array, ymin: float, ymax: float) -> void:
 	var right_hint := Vector3(tip.y - e.y, 0, -(tip.x - e.x)).normalized()
 	var steps := []                            # [y, material]
 	for k in floors:
-		steps.append([yb + fh * k, "white"])
-		steps.append([yb + fh * k + 0.95, "glass_blue"])
-	steps.append([yb + fh * floors, "white"])
+		steps.append([yb + fh * k, "sail_line"])           # a thin line at each floor, the rest glass
+		steps.append([yb + fh * k + 0.28, "sail_glass"])
+	steps.append([yb + fh * floors, "sail_line"])
 	steps.append([ytop, ""])
 	var cv := PackedVector3Array()
 	for i in steps.size() - 1:
@@ -324,7 +338,10 @@ func _build_seilet(poly: PackedVector2Array, ymin: float, ymax: float) -> void:
 	var zt := _sail_back(ytop, podium, ytop)
 	mb.tri("white", _v3(_on_edge(w, tip, zt) + Vector2(0.7, 0), ytop), _v3(_on_edge(e, tip, zt) - Vector2(0.7, 0), ytop), _v3(tin, ytop), Vector3.UP)
 	# the mast at the tip
-	mb.box("white", _v3(tin + Vector2(0, 0.2), (yb + ytop + 7.0) * 0.5), Vector3.RIGHT, Vector3.UP, Vector3.BACK, Vector3(0.35, (ytop + 7.0 - yb) * 0.5, 0.35))
+	# (thin, and half as tall again as the tower: it is what makes the sail a sail from across the fjord)
+	mb.box("steel", _v3(tin + Vector2(0, 0.5), (yb + ytop + 24.0) * 0.5), Vector3.RIGHT, Vector3.UP, Vector3.BACK, Vector3(0.2, (ytop + 24.0 - yb) * 0.5, 0.2))
+	for k in 6:
+		mb.box("steel", _v3(tin + Vector2(0, 0.25), yb + (ytop - yb) * (float(k) + 0.5) / 6.0), Vector3.RIGHT, Vector3.UP, Vector3.BACK, Vector3(0.06, 0.06, 0.3))
 	_commit(mb, "Seilet")
 	_mesh_body(cv)
 
@@ -747,8 +764,9 @@ func _build_sports(sp: Dictionary) -> void:
 		for r in rows:
 			var y0 := base + 0.5 + rise * float(r)
 			var front := _v3(c2 + back * (row_d * float(r)), 0.0)
-			var mid := front + bx * (row_d * 0.5) + Vector3(0, y0 * 0.5 + (base - 1.0) * 0.5, 0)
-			mb.box("concrete", mid, ux, Vector3.UP, bx, Vector3(length * 0.5, (y0 - (base - 1.0)) * 0.5, row_d * 0.5))
+			# (each step goes well down into the ground: where the ground falls away at an end, the stand stood in the air)
+			var mid := front + bx * (row_d * 0.5) + Vector3(0, y0 * 0.5 + (base - 6.0) * 0.5, 0)
+			mb.box("concrete", mid, ux, Vector3.UP, bx, Vector3(length * 0.5, (y0 - (base - 6.0)) * 0.5, row_d * 0.5))
 			var e0 := front - ux * (length * 0.5) + Vector3(0, y0, 0)
 			var e1 := front + ux * (length * 0.5) + Vector3(0, y0, 0)
 			_cq(cv, e0, e1, e1 + bx * row_d, e0 + bx * row_d)
@@ -763,10 +781,18 @@ func _build_sports(sp: Dictionary) -> void:
 			var house_d: float = sd[10]
 			var roof_y := top_y + 4.2
 			if house_d > 1.0:
-				mb.box("granite", rear + bx * (house_d * 0.5) + Vector3(0, (roof_y + base - 1.0) * 0.5, 0), ux, Vector3.UP, bx, Vector3(length * 0.5, (roof_y - base + 1.0) * 0.5, house_d * 0.5))
+				mb.box("granite", rear + bx * (house_d * 0.5) + Vector3(0, (roof_y + base - 6.0) * 0.5, 0), ux, Vector3.UP, bx, Vector3(length * 0.5, (roof_y - base + 6.0) * 0.5, house_d * 0.5))       # (down into the ground: its south-west corner hung in the air, 21 Nov)
 				_box_body(rear + bx * (house_d * 0.5) + Vector3(0, (roof_y + base) * 0.5, 0), u2, Vector3(length, roof_y - base, house_d))
 				mb.box("glass_blue", rear + bx * (-0.03) + Vector3(0, top_y + 1.6, 0), ux, Vector3.UP, bx, Vector3(length * 0.5 - 2.0, 0.9, 0.04))
 			mb.box("roof_dark", rear + bx * (house_d * 0.5 - depth * 0.5) + Vector3(0, roof_y + 0.2, 0), ux, Vector3.UP, bx, Vector3(length * 0.5 + 0.8, 0.2, (house_d + depth) * 0.5 + 0.6))
+			if house_d <= 1.0:
+				# a stand by itself: the roof on a row of steel columns behind the last row, and a wall at its back
+				# (the roof hung in the air: "a part of the roof is floating", 21 Nov)
+				var posts := maxi(2, int(length / 6.0) + 1)
+				for k in posts:
+					var along2 := -length * 0.5 + 0.4 + (length - 0.8) * float(k) / float(posts - 1)
+					mb.box("steel", rear + ux * along2 + bx * 0.25 + Vector3(0, (roof_y + base - 1.0) * 0.5, 0), ux, Vector3.UP, bx, Vector3(0.11, (roof_y - base + 1.0) * 0.5, 0.11))
+				mb.box("concrete", rear + bx * 0.45 + Vector3(0, (top_y + 1.1 + base - 6.0) * 0.5, 0), ux, Vector3.UP, bx, Vector3(length * 0.5, (top_y + 1.1 - base + 6.0) * 0.5, 0.10))
 		else:
 			mb.box("concrete", rear + bx * 0.12 + Vector3(0, (top_y + 1.0 + base - 1.0) * 0.5, 0), ux, Vector3.UP, bx, Vector3(length * 0.5, (top_y + 1.0 - base + 1.0) * 0.5, 0.12))
 			_box_body(rear + bx * 0.12 + Vector3(0, (top_y + 1.0 + base) * 0.5, 0), u2, Vector3(length, top_y + 1.0 - base, 0.24))
@@ -794,7 +820,28 @@ func _build_canopies(canopies: Array) -> void:
 		mb.box("white", _v3(c, top - 0.35), ux, Vector3.UP, vx, Vector3(hl, 0.35, hw))
 		mb.box("fuel_red", _v3(c, top - 0.35), ux, Vector3.UP, vx, Vector3(hl + 0.04, 0.2, hw + 0.04))
 		mb.box("fuel_yellow", _v3(c, top - 0.62), ux, Vector3.UP, vx, Vector3(hl + 0.05, 0.05, hw + 0.05))
+		if cn.get("turn", false):
+			# the islands side by side across the roof's shorter side, each lying along its longer side: one drives
+			# through from end to end, a row of pumps on either hand
+			var rows := maxi(1, int(hw / 3.6))
+			var reach := hl - 2.6
+			for k in rows:
+				var across := ((float(k) + 0.5) / float(rows) * 2.0 - 1.0) * hw
+				var p := c + v * (across * (hw - 2.4) / hw)
+				var py: float = world.height_at(p.x, p.y)
+				mb.box("concrete", _v3(p, py + 0.08), ux, Vector3.UP, vx, Vector3(reach * 0.75, 0.1, 0.6))             # the island
+				for sgn in [-1.0, 1.0]:
+					var sg: float = sgn
+					var col := p + u * (sg * reach * 0.72)
+					mb.box("steel", _v3(col, (py + top) * 0.5), ux, Vector3.UP, vx, Vector3(0.16, (top - py) * 0.5, 0.16))
+					_box_body(_v3(col, (py + top) * 0.5), u, Vector3(0.32, top - py, 0.32))
+					var pump := p + u * (sg * reach * 0.30)
+					mb.box("fuel_red", _v3(pump, py + 0.95), ux, Vector3.UP, vx, Vector3(0.5, 0.8, 0.28))
+					mb.box("dark", _v3(pump, py + 1.35), ux, Vector3.UP, vx, Vector3(0.36, 0.22, 0.29))
+					_box_body(_v3(pump, py + 0.9), u, Vector3(1.0, 1.8, 0.56))
 		var islands := maxi(1, int(hl / 4.5))
+		if cn.get("turn", false):
+			islands = 0
 		for k in islands:
 			var along := (float(k) + 0.5) / float(islands) * 2.0 - 1.0
 			var p := c + u * (along * (hl - 2.5))

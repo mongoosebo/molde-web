@@ -1,8 +1,8 @@
 # Textures
 
-The building materials below are photographed textures from Poly Haven (https://polyhaven.com), which are CC0:
+The materials below are photographed textures from Poly Haven (https://polyhaven.com), which are CC0:
 free to use, no credit needed. They are listed all the same. Each was made grey and brought to the brightness
-the game expects by `tools/fetch_textures.py`; the colour of a wall or roof is the building's own.
+the game expects by `tools/fetch_textures.py`; the colour of a wall, a roof or the ground is the game's own.
 
 | texture here | Poly Haven texture |
 |---|---|
@@ -16,5 +16,13 @@ the game expects by `tools/fetch_textures.py`; the colour of a wall or roof is t
 | `slate_albedo.png`, `_normal.png`, `_rough.png` | [grey_roof_01](https://polyhaven.com/a/grey_roof_01) |
 | `seam_albedo.png`, `_normal.png`, `_rough.png` | [box_profile_metal_sheet](https://polyhaven.com/a/box_profile_metal_sheet) |
 | `brick_albedo.png`, `_normal.png`, `_rough.png` | [brick_wall_006](https://polyhaven.com/a/brick_wall_006) |
+| `asphalt_albedo.png`, `_normal.png`, `_rough.png` | [asphalt_track](https://polyhaven.com/a/asphalt_track) |
+| `slabs_albedo.png`, `_normal.png`, `_rough.png` | [large_square_pattern_01](https://polyhaven.com/a/large_square_pattern_01) |
+| `paving_albedo.png`, `_normal.png`, `_rough.png` | [pavement_04](https://polyhaven.com/a/pavement_04) |
+| `gravel_albedo.png`, `_normal.png`, `_rough.png` | [gravel_floor_02](https://polyhaven.com/a/gravel_floor_02) |
+| `path_albedo.png`, `_normal.png`, `_rough.png` | [floor_pebbles_01](https://polyhaven.com/a/floor_pebbles_01) |
+| `turf_albedo.png`, `_normal.png`, `_rough.png` | [leafy_grass](https://polyhaven.com/a/leafy_grass) |
+| `forest_albedo.png`, `_normal.png`, `_rough.png` | [forrest_ground_01](https://polyhaven.com/a/forrest_ground_01) |
+| `rock_albedo.png`, `_normal.png`, `_rough.png` | [rock_face_03](https://polyhaven.com/a/rock_face_03) |
 
 Every other texture in this folder is made by `tools/make_textures.py` from noise.

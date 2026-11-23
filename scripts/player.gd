@@ -135,6 +135,11 @@ func _ready() -> void:
 
 
 const Body := preload("res://scripts/body.gd")        # the figure itself: shared with the people of the town
+const Rigged := preload("res://scripts/rigged.gd")    # the player's own model, laid after the figure's joints
+var _rig                                 # null: the built figure is what is drawn
+var _rig_own := false                    # simply walking or running on the ground: the model's own animations
+var _rig_run := 0.0
+var _rig_amount := 0.0
 
 var body_triangles := 0                 # how many triangles the body is drawn with (./run.sh -- --body)
 
@@ -161,6 +166,15 @@ func _build_body() -> void:
 	_arm_r = b["arm_r"]
 	_elbow_r = b["elbow_r"]
 	body_triangles = b["triangles"]
+	# His own model, if there is one (models/player.glb, made in Meshy and rigged by Magnus, 20 Nov): it is drawn
+	# in place of the built figure, whose joints go on being moved and are what its bones are laid after.
+	var rig = Rigged.new()
+	if rig.setup(_figure, b, "res://models/player.glb"):
+		for mi in _figure.find_children("*", "MeshInstance3D", true, false):
+			if not rig.root.is_ancestor_of(mi):
+				(mi as MeshInstance3D).visible = false
+		_rig = rig
+		body_triangles = rig.triangles
 
 
 ## Two-bone reach: put the end of a limb (wrist or ankle) on `target`, with the hinge pushed toward `pole`.
@@ -246,6 +260,14 @@ func _toggle_atv(force := false) -> void:
 		if float(_spec["camera"]) > 0.0:
 			_arm.spring_length = _spec["camera"]
 		_drive_speed = 0.0
+		_steer = 0.0
+		_yaw_rate = 0.0
+		_car_roll = 0.0
+		_car_dive = 0.0
+		plane_throttle = 0.0
+		_plane_pitch = 0.0
+		_plane_roll = 0.0
+		_plane_sink = 0.0
 		_atv_home = atv.get_parent()
 		atv.set_parked(false)
 		global_position = atv.global_position + Vector3(0, 0.1, 0)
@@ -325,6 +347,7 @@ func _show_rider(on: bool) -> void:
 ## Sit on the ATV: hips on the seat, feet on the rests, and the hands on the grips wherever the
 ## handlebars and the suspension have taken them.
 func _ride_pose() -> void:
+	_rig_own = false
 	var cx: Transform3D = atv.chassis_xf()
 	var lean := 0.5
 	var hips := Vector3(0.0, 0.90, 0.15)
@@ -430,24 +453,27 @@ func _drive(delta: float, iv: Vector2) -> void:
 				rate = float(_spec["brake"]) * (0.35 if icy < 1.0 else 1.0)
 			else:
 				rate = float(_spec["power"]) * lerpf(1.0, 0.3, clampf(absf(_drive_speed) / fast, 0.0, 1.0))
-		_drive_speed = move_toward(_drive_speed, target, rate * delta)
-		# steering needs some speed, and gets calmer as it gets fast
-		var grip := clampf(_drive_speed / 3.0, -1.0, 1.0)
-		_heading -= iv.x * grip * delta * lerpf(2.2, 0.5, clampf(absf(_drive_speed) / fast, 0.0, 1.0)) * float(_spec.get("turn", 1.0))      # (a bus turns wide)
-		# Drifting (Space, in a vehicle that can): the rear wheels let go. The nose swings round quickly with the
-		# steering while the car keeps travelling nearly the way it was going, scrubbing off speed as it slides.
-		var sliding: bool = _spec["drift"] and Input.is_action_pressed("jump") and absf(_drive_speed) > 5.0 and not in_water
-		if sliding:
-			_heading -= iv.x * signf(_drive_speed) * delta * 1.1
-			_course = lerp_angle(_course, _heading, minf(1.0, 0.9 * delta))
-			_drive_speed = move_toward(_drive_speed, 0.0, (4.0 + 9.0 * absf(sin(angle_difference(_course, _heading)))) * delta)
+		if _spec["drift"] and not in_water:
+			_drive_car(delta, iv, throttle, top, icy)
 		else:
-			_course = lerp_angle(_course, _heading, minf(1.0, (5.0 if absf(angle_difference(_course, _heading)) > 0.06 else 40.0) * delta * icy))
-		var slip := angle_difference(_course, _heading)
-		if absf(slip) > 1.2:                              # no further round than this: it would be going backwards
-			_heading = _course + 1.2 * signf(slip)
-			slip = 1.2 * signf(slip)
-		atv.set_drift(sliding or (_spec["drift"] and absf(slip) > 0.25 and absf(_drive_speed) > 5.0), slip, _drive_speed)
+			_drive_speed = move_toward(_drive_speed, target, rate * delta)
+			# steering needs some speed, and gets calmer as it gets fast
+			var grip := clampf(_drive_speed / 3.0, -1.0, 1.0)
+			_heading -= iv.x * grip * delta * lerpf(2.2, 0.5, clampf(absf(_drive_speed) / fast, 0.0, 1.0)) * float(_spec.get("turn", 1.0))      # (a bus turns wide)
+			# Drifting (Space, in a vehicle that can): the rear wheels let go. The nose swings round quickly with the
+			# steering while the car keeps travelling nearly the way it was going, scrubbing off speed as it slides.
+			var sliding: bool = _spec["drift"] and Input.is_action_pressed("jump") and absf(_drive_speed) > 5.0 and not in_water
+			if sliding:
+				_heading -= iv.x * signf(_drive_speed) * delta * 1.1
+				_course = lerp_angle(_course, _heading, minf(1.0, 0.9 * delta))
+				_drive_speed = move_toward(_drive_speed, 0.0, (4.0 + 9.0 * absf(sin(angle_difference(_course, _heading)))) * delta)
+			else:
+				_course = lerp_angle(_course, _heading, minf(1.0, (5.0 if absf(angle_difference(_course, _heading)) > 0.06 else 40.0) * delta * icy))
+			var slip := angle_difference(_course, _heading)
+			if absf(slip) > 1.2:                              # no further round than this: it would be going backwards
+				_heading = _course + 1.2 * signf(slip)
+				slip = 1.2 * signf(slip)
+			atv.set_drift(sliding or (_spec["drift"] and absf(slip) > 0.25 and absf(_drive_speed) > 5.0), slip, _drive_speed)
 		fwd = Vector3(-sin(_course), 0.0, -cos(_course))
 	else:
 		_heading -= iv.x * 0.5 * delta                 # a little twist in the air
@@ -587,10 +613,117 @@ func _drive(delta: float, iv: Vector2) -> void:
 		# in the air the nose follows the arc
 		var hs := maxf(absf(_drive_speed), 3.0)
 		want = Basis(Vector3.UP, _heading) * Basis(Vector3.RIGHT, clampf(atan2(_vy, hs) * 0.7, -0.6, 0.6))
+	if _spec["drift"]:
+		want = want * Basis(Vector3.RIGHT, _car_dive) * Basis(Vector3.BACK, -_car_roll)
 	_body.basis = _body.basis.orthonormalized().slerp(want.orthonormalized(), minf(1.0, 10.0 * delta))
-	atv.animate(_drive_speed * cos(angle_difference(_course, _heading)), -iv.x, delta, [get_rid()])
+	atv.animate(_drive_speed * cos(angle_difference(_course, _heading)), -(_steer if _spec["drift"] else iv.x), delta, [get_rid()])
 	if not _spec["hides_rider"]:
 		_ride_pose()
+
+
+## A car on its tyres (note of 21 Nov: "Grand Theft Auto 5's car physics, that is what I want for all driveable
+## cars"). Not a simulation of the whole car, but the things that make that handling what it is:
+## - it has weight: it pulls hard off the line and less the faster it goes, and it takes a while to stop;
+## - the front wheels turn at the rate hands turn a wheel, and less far the faster it goes;
+## - the tyres hold only so much: asked for a tighter turn than they can give at that speed, the car runs wide;
+## - the car turns round its own middle with some inertia, and its speed sideways is something the rear tyres have
+##   to take out again. With the handbrake (Space) they lock and let go, and the tail comes round; with the power
+##   hard on in a tight turn they spin and let go more gently; lifting off lets them bite again;
+## - sliding scrubs speed off, and it can be spun right round and caught again, or not.
+## The speed and the way it travels are kept as before (_drive_speed along _course), so jumps, kerbs, walls and
+## water go on working as they did.
+var _steer := 0.0                   # the front wheels: -1 full left to 1 full right
+var _yaw_rate := 0.0                # how fast it is turning to the right, rad/s
+var _car_roll := 0.0                # the body leaning out of a turn, and
+var _car_dive := 0.0                # nodding under braking (visible only: see the end of _drive)
+
+
+func _drive_car(delta: float, iv: Vector2, throttle: float, top: float, icy: float) -> void:
+	var hand := Input.is_action_pressed("jump")
+	var fwd2 := Vector2(-sin(_heading), -cos(_heading))
+	var right2 := Vector2(cos(_heading), -sin(_heading))
+	var vel2 := Vector2(-sin(_course), -cos(_course)) * _drive_speed
+	var vf := vel2.dot(fwd2)
+	var vl := vel2.dot(right2)
+	# ---- along the car: the engine, the brakes, what the air and the rolling take
+	var power: float = _spec["power"]
+	var grip_g := 10.5 * icy                                    # the most the tyres can push the car about, m/s²
+	# Round a corner they hold more than that, and what they spend on turning they cannot spend on pulling: with
+	# the wheel hard over the engine no longer drives the car wide ("the cars are understeering too much", 21 Nov)
+	var turn_g := 14.5 * icy
+	var turning := clampf(absf(vf * _yaw_rate) / maxf(turn_g, 0.1), 0.0, 1.0)
+	var a := 0.0
+	if throttle > 0.1:
+		if vf < -0.8:
+			a = minf(float(_spec["brake"]), 11.0) * icy          # braking out of reverse
+		else:
+			var share := clampf(vf / top, 0.0, 1.0)
+			a = minf(power * 0.66 * throttle * (1.0 - share * share * share), grip_g) * (1.0 - 0.75 * turning * turning)
+			if vf > top:
+				a = -2.5
+	elif throttle < -0.1:
+		if vf > 0.8:
+			a = -minf(float(_spec["brake"]), 11.0) * icy
+		else:
+			a = -power * 0.55 * (1.0 - clampf(-vf / float(_spec["reverse"]), 0.0, 1.0))
+	else:
+		a = -signf(vf) * minf(absf(vf) / maxf(delta, 0.001), 1.1 + 0.035 * absf(vf))
+	if hand:
+		a -= signf(vf) * minf(absf(vf) / maxf(delta, 0.001), 5.0 * icy)
+	if a * vf < 0.0 and absf(a * delta) > absf(vf):
+		a = -vf / maxf(delta, 0.001)                            # (braking stops it; it does not throw it into reverse)
+	vel2 += fwd2 * a * delta
+	vf += a * delta
+	# ---- the steering: the wheel turns at the speed of hands, and less far the faster the car goes
+	_steer = move_toward(_steer, iv.x, (3.4 if absf(iv.x) > absf(_steer) or signf(iv.x) != signf(_steer) else 5.0) * delta)
+	var lock := lerpf(0.62, 0.10, clampf(absf(vf) / 46.0, 0.0, 1.0)) * float(_spec.get("turn", 1.0))
+	var want_yaw := vf / 2.7 * tan(_steer * lock)
+	var side_a := absf(vf * want_yaw)
+	if side_a > turn_g:
+		# more than the front tyres can turn it: it runs wide, and the tyres dragged sideways slow it down, so
+		# that the turn tightens by itself
+		var scrub := minf(absf(vf), minf((side_a / turn_g - 1.0) * 2.2, 3.0) * absf(_steer) * delta)
+		vel2 -= fwd2 * signf(vf) * scrub
+		vf -= signf(vf) * scrub
+		want_yaw *= turn_g / side_a
+	# ---- the tail: how hard the rear tyres hold the car to the way it points
+	var hold := 9.5 * icy
+	if hand and absf(vf) > 3.0:
+		hold = 0.9 * icy
+		want_yaw += _steer * 0.85 * signf(vf)                   # locked rear wheels: the tail comes round
+	elif throttle > 0.6 and absf(_steer) > 0.7 and vf > 4.0 and vf < 20.0:
+		hold = 5.5 * icy                                        # the power on in a tight turn: they spin a little
+		want_yaw += _steer * 0.10
+	elif throttle < 0.1 and not hand and absf(_steer) > 0.3 and vf > 8.0:
+		# off the power or on the brakes going into a turn: the weight goes forward, the nose bites and the tail
+		# goes light, so the car turns in
+		hold = (6.5 if throttle < -0.1 else 7.5) * icy
+		want_yaw *= 1.15 if throttle < -0.1 else 1.08
+	_yaw_rate = lerpf(_yaw_rate, want_yaw, minf(1.0, (8.0 if hold > 5.0 else 4.5) * delta))
+	_heading -= _yaw_rate * delta
+	fwd2 = Vector2(-sin(_heading), -cos(_heading))
+	right2 = Vector2(cos(_heading), -sin(_heading))
+	vf = vel2.dot(fwd2)                                         # (the car has turned; its speed has not, yet)
+	vl = vel2.dot(right2)
+	# the rear tyres take the sideways speed out, as fast as they hold and no faster than they can
+	var take := minf(absf(vl) * (1.0 - exp(-hold * delta)), turn_g * 1.25 * delta * (hold / 9.5 + 0.25))
+	vl -= signf(vl) * take
+	vf -= signf(vf) * minf(absf(vf), absf(vl) * 0.55 * delta)   # sliding scrubs the speed off
+	vel2 = fwd2 * vf + right2 * vl
+	var speed := vel2.length()
+	if speed > 0.3:
+		var back := vf < 0.0
+		var way := -vel2 if back else vel2
+		_course = atan2(-way.x, -way.y)
+		_drive_speed = -speed if back else speed
+	else:
+		_course = _heading
+		_drive_speed = vf
+	var slip := angle_difference(_course, _heading)
+	atv.set_drift(absf(vl) > 2.5 and speed > 5.0, slip, _drive_speed)
+	# what the body does: leans out of the turn, nods under the brakes, sits back under power
+	_car_roll = lerpf(_car_roll, clampf(vf * _yaw_rate / 10.0, -1.0, 1.0) * 0.055, minf(1.0, 6.0 * delta))
+	_car_dive = lerpf(_car_dive, clampf(-a / 12.0, -1.0, 1.0) * 0.030, minf(1.0, 5.0 * delta))
 
 
 ## The road under each tyre of the driven vehicle: what a ray straight down from above the wheel meets (asphalt,
@@ -674,6 +807,78 @@ func _fly(delta: float, iv: Vector2) -> void:
 		_ride_pose()
 
 
+## Flying an aeroplane (scripts/aeroplane.gd). W opens the throttle and S closes it; with it closed, S brakes on
+## the ground. It runs along the ground on its wheels, steered with A and D, until it has the speed to fly; then
+## the nose follows where one looks, up and down and round, banking into the turn, and A and D bank it further.
+## It flies only as long as it has speed: climbing costs speed and diving gives it, and below its stalling speed
+## the nose drops and it sinks. It lands by coming down gently onto its wheels.
+var _plane_pitch := 0.0             # nose up, radians
+var _plane_roll := 0.0              # right wing down
+var _plane_sink := 0.0              # falling, m/s, when the wing does not carry it
+var plane_throttle := 0.0
+
+
+func _fly_plane(delta: float, iv: Vector2) -> void:
+	floor_snap_length = 0.0
+	var stall: float = _spec["stall"]
+	var top: float = _spec["top"]
+	var push: float = _spec["push"]
+	var water := _float_line(-WATER_LINE - 0.3, 0.6)
+	var afloat: bool = global_position.y <= water + 0.05
+	var grounded := is_on_floor() or afloat
+	plane_throttle = clampf(plane_throttle - iv.y * 0.6 * delta, 0.0, 1.0)
+	atv.throttle = plane_throttle
+	var v := _drive_speed
+	# along its own line: the engine, the air (so that full throttle gives the top speed), the hill it climbs or dives
+	var acc := push * plane_throttle - push * (v / top) * (v / top) - GRAVITY * 0.55 * sin(_plane_pitch)
+	if grounded:
+		acc -= 0.5 + (float(_spec["brake"]) if (iv.y > 0.3 and plane_throttle < 0.05) else 0.0)
+		if afloat:
+			acc -= 6.0
+	v = maxf(v + acc * delta, 0.0)
+	var lift := clampf((v - 0.72 * stall) / (0.28 * stall), 0.0, 1.0)          # how much of its weight the wing carries
+	var want_pitch := clampf((pitch + 0.22) * 1.25, -0.85, 0.60)
+	if grounded:
+		# on its wheels: steered like a cart, the nose held level until there is speed to lift it
+		_heading -= iv.x * clampf(v / 6.0, 0.0, 1.0) * lerpf(0.9, 0.25, clampf(v / stall, 0.0, 1.0)) * delta
+		_plane_pitch = move_toward(_plane_pitch, maxf(want_pitch, 0.0) * lift if lift > 0.6 else 0.0, 0.5 * delta)
+		_plane_roll = move_toward(_plane_roll, 0.0, 2.0 * delta)
+		_plane_sink = 0.0
+	else:
+		var turn_to := angle_difference(_heading, yaw)
+		var rate: float = float(_spec["turn"]) * lerpf(0.35, 1.0, lift)
+		_heading += clampf(turn_to, -rate * delta, rate * delta) - iv.x * rate * 0.6 * delta
+		_plane_roll = move_toward(_plane_roll, clampf(-turn_to * 1.6 + iv.x * 0.6, -1.05, 1.05), 1.6 * delta)
+		# without the speed to carry it the nose falls and it sinks; with it, the nose goes where one looks
+		_plane_pitch = move_toward(_plane_pitch, lerpf(-0.55, want_pitch, lift), float(_spec["pitch"]) * delta)
+		_plane_sink = move_toward(_plane_sink, (1.0 - lift) * 26.0, (GRAVITY * (1.0 - lift) + 6.0 * lift) * delta)
+	var nose := Basis(Vector3.UP, _heading) * Basis(Vector3.RIGHT, _plane_pitch) * Vector3(0, 0, -1)
+	velocity = nose * v + Vector3(0, -_plane_sink, 0)
+	if grounded and _plane_pitch <= 0.01:
+		velocity.y = -1.0 if not afloat else 0.0                               # held on the ground
+	var before := velocity
+	move_and_slide()
+	if is_on_floor() and before.y < -1.5:
+		v *= 1.0 - clampf((-before.y - 1.5) / 14.0, 0.0, 0.6)                 # a hard landing takes speed out of it
+		_plane_pitch = maxf(_plane_pitch, -0.05)
+	if is_on_wall() and v > 8.0 and get_wall_normal().dot(nose) < -0.55:
+		v *= 0.4                                                               # into a wall or a hillside, head on
+	if global_position.y < water:
+		global_position.y = water
+		_plane_sink = 0.0
+		_plane_pitch = maxf(_plane_pitch, 0.0)
+	var ground: float = world.height_at(global_position.x, global_position.z)
+	if global_position.y < ground - 1.5:
+		global_position.y = ground + 0.3
+	global_position.x = clampf(global_position.x, world.x0 + 30.0, world.x1 - 30.0)
+	global_position.z = clampf(global_position.z, world.z0 + 30.0, world.z1 - 30.0)
+	global_position.y = minf(global_position.y, 2500.0)
+	world.update_streaming(global_position)
+	_drive_speed = v
+	var want := Basis(Vector3.UP, _heading) * Basis(Vector3.RIGHT, _plane_pitch) * Basis(Vector3.BACK, -_plane_roll)
+	_body.basis = _body.basis.orthonormalized().slerp(want.orthonormalized(), minf(1.0, 8.0 * delta))
+
+
 func _physics_process(delta: float) -> void:
 	world.ripples.step(global_position, delta)
 
@@ -682,7 +887,9 @@ func _physics_process(delta: float) -> void:
 	yaw -= look.x * 2.6 * delta
 	pitch = clampf(pitch - look.y * 1.8 * delta, -1.35, 0.7)
 	if driving:
-		if _spec.get("flies", false):
+		if _spec.get("wings", false):
+			_fly_plane(delta, iv)
+		elif _spec.get("flies", false):
 			_fly(delta, iv)
 		else:
 			_drive(delta, iv)
@@ -845,6 +1052,9 @@ func _animate(delta: float, speed: float, grounded: bool) -> void:
 	var head_y := 0.0
 	var leg_out := -1.0                                 # the legs out to the side (the frog kick); -1: half of what the arms do
 	var in_water := swimming or _climb > 0.0
+	_rig_own = grounded and not in_water and _land <= 0.0
+	_rig_run = run
+	_rig_amount = amount
 	if in_water:
 		ank_l = -0.45                                       # feet pointed
 		ank_r = -0.45
@@ -1020,6 +1230,8 @@ func set_seat_view(on: bool) -> void:
 
 
 func _process(_delta: float) -> void:
+	if _rig != null:
+		_rig.update(_delta, _rig_own, _gait, _rig_run, _rig_amount)
 	if seat_view and not driving:
 		set_seat_view(false)
 	if seat_view:

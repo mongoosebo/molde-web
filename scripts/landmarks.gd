@@ -5,6 +5,7 @@ extends Node3D
 
 const Paths := preload("res://scripts/paths.gd")
 var TEX_DIR: String = Paths.world + "textures/"
+const Rosepiken := preload("res://scripts/rosepiken.gd")
 
 const SPECS := {
 	# Modernist town hall (1966): board-formed concrete and gold-tinted glass, rose garden on the roof.
@@ -105,6 +106,8 @@ func _textured(tex: String, tint: Color, tile_m: float, rough: float, triplanar 
 	if triplanar:
 		m.normal_enabled = true
 		m.normal_texture = _tex(tex + "_normal")
+		if FileAccess.file_exists(TEX_DIR + tex + "_rough.png"):
+			m.roughness_texture = _tex(tex + "_rough")
 		m.uv1_triplanar = true
 		m.uv1_world_triplanar = true
 		m.uv1_scale = Vector3.ONE / tile_m
@@ -128,7 +131,7 @@ func _make_materials() -> void:
 		"plaster_terracotta": _textured("plaster", Color(0.72, 0.36, 0.25), 2.0, 0.93),
 		"plaster_sage": _textured("plaster", Color(0.66, 0.72, 0.64), 2.0, 0.93),
 		"plaster_white": _textured("plaster", Color(0.90, 0.89, 0.85), 2.0, 0.9),
-		"paving": _textured("paving", Color(1, 1, 1), 2.0, 0.85),
+		"paving": _textured("paving", Color(1, 1, 1), 3.1, 0.85),
 		"gravel": _textured("gravel", Color(0.75, 0.75, 0.75), 2.0, 0.97),
 		"tile_red": _textured("rooftile", Color(0.60, 0.27, 0.19), 2.0, 0.8, false),
 		"tile_slate": _textured("rooftile", Color(0.30, 0.32, 0.35), 2.0, 0.75, false),
@@ -646,44 +649,32 @@ func _build_plaza(poly: PackedVector2Array, centre: Vector2) -> void:
 		at = Vector2(spot[0], spot[1])                        # where she really stands
 	var y: float = world.height_at(at.x, at.y)
 	var o := Vector3(at.x, y, at.y)
-	var segs := 20
-	for i in segs:
-		var a0 := TAU * float(i) / segs
-		var a1 := TAU * float(i + 1) / segs
-		var d0 := Vector3(cos(a0), 0, sin(a0))
-		var d1 := Vector3(cos(a1), 0, sin(a1))
-		var nm := (d0 + d1).normalized()
-		mb.quad("concrete_brown", o + d0 * 2.0, o + d1 * 2.0, o + d1 * 2.0 + Vector3(0, 0.55, 0), o + d0 * 2.0 + Vector3(0, 0.55, 0), nm)
-		mb.quad("concrete_brown", o + d0 * 1.75 + Vector3(0, 0.3, 0), o + d1 * 1.75 + Vector3(0, 0.3, 0), o + d1 * 1.75 + Vector3(0, 0.55, 0), o + d0 * 1.75 + Vector3(0, 0.55, 0), -nm)
-		mb.quad("concrete_brown", o + d0 * 1.75 + Vector3(0, 0.55, 0), o + d1 * 1.75 + Vector3(0, 0.55, 0), o + d1 * 2.0 + Vector3(0, 0.55, 0), o + d0 * 2.0 + Vector3(0, 0.55, 0), Vector3.UP)  # (the basin's ring in the town hall's brown concrete: note of 18 Nov)
-		mb.tri("water", o + Vector3(0, 0.4, 0), o + d0 * 1.75 + Vector3(0, 0.4, 0), o + d1 * 1.75 + Vector3(0, 0.4, 0), Vector3.UP)
-	mb.box("concrete", o + Vector3(0, 0.75, 0), Vector3.RIGHT, Vector3.UP, Vector3.BACK, Vector3(0.3, 0.75, 0.3))
 	_commit(mb, "Raadhusplassen")
-	# the figure: a girl carrying a basket of roses
-	var skirt := CylinderMesh.new()
-	skirt.top_radius = 0.13
-	skirt.bottom_radius = 0.27
-	skirt.height = 0.85
-	skirt.radial_segments = 10
-	_prim(skirt, o + Vector3(0, 1.93, 0), "statue")
-	_prim(_capsule(0.15, 0.62), o + Vector3(0, 2.62, 0), "statue")          # body
-	_prim(_sphere(0.125), o + Vector3(0, 3.05, 0), "statue")                # head
-	_prim(_capsule(0.05, 0.5), o + Vector3(0.2, 2.6, 0.06), "statue")       # the arm round the basket
-	_prim(_capsule(0.05, 0.5), o + Vector3(-0.2, 2.58, 0.0), "statue")
-	_prim(_sphere(0.19), o + Vector3(0.27, 2.42, 0.14), "statue")           # the basket of roses on her hip
-	_prim(_sphere(0.075), o + Vector3(0.27, 2.57, 0.14), "statue")
-	_prim(_sphere(0.07), o + Vector3(0.36, 2.54, 0.08), "statue")
-	_prim(_sphere(0.07), o + Vector3(0.2, 2.55, 0.22), "statue")
-	var shape := CylinderShape3D.new()
-	shape.radius = 2.0
-	shape.height = 1.2
+	# the basin, the island in it, the jets, and the girl with her basket: scripts/rosepiken.gd. The basin is square,
+	# its sides along Storgata; she looks out over the square, away from the brick block behind her.
+	var rose := MeshInstance3D.new()
+	rose.name = "Rosepiken"
+	rose.mesh = Rosepiken.build()
+	var face_to := Vector3(0.9774, 0, -0.2114)
+	rose.transform = Transform3D(Basis(Vector3.UP.cross(face_to), Vector3.UP, face_to), o)
+	add_child(rose)
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(Rosepiken.HALF * 2.0, 1.0, Rosepiken.HALF * 2.0)
 	var col := CollisionShape3D.new()
 	col.shape = shape
-	col.position = o + Vector3(0, 0.3, 0)
 	var body := StaticBody3D.new()
+	body.transform = Transform3D(rose.transform.basis, o + Vector3(0, Rosepiken.RIM_H - 0.5, 0))
 	body.add_child(col)
 	add_child(body)
-
+	var post := CylinderShape3D.new()                        # and herself, to walk into
+	post.radius = 0.3
+	post.height = 2.6
+	var col2 := CollisionShape3D.new()
+	col2.shape = post
+	col2.position = o + Vector3(0, 1.5, 0)
+	var body2 := StaticBody3D.new()
+	body2.add_child(col2)
+	add_child(body2)
 
 func _capsule(r: float, h: float) -> CapsuleMesh:
 	var m := CapsuleMesh.new()

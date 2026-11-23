@@ -75,8 +75,10 @@ static func _build() -> void:
 		var x := (HALF_W + 0.004) * sx
 		for az in [AXLE_F, AXLE_R]:
 			var zc: float = az
-			g.cyl("black", Vector3(x, 0.50, zc), Vector3.RIGHT, 0.62, 0.006, 28)          # the wheel arch: a dark round over each wheel
-			g.box("black", Vector3(x - 0.02 * sx, 0.56, zc), Vector3(0.02, 0.44, 0.50))
+			# the wheel arch: a dark round behind each wheel. (A black plate stood here over the whole wheel, and the
+			# wheel itself sat inside the body's side where it could not be seen: "a weird black cover on the outside
+			# of the bus wheels", 20 Nov. The wheels now stand out of the side, as on the Volvo.)
+			g.cyl("black", Vector3(x, 0.50, zc), Vector3.RIGHT, 0.57, 0.006, 28)
 		# the band of windows: dark glass from behind the windscreen to the tail, a pillar between each pane
 		g.box("glass", Vector3(x, 1.95, 0.35), Vector3(0.008, 0.62, hl - 0.75))
 		for k in 9:
@@ -219,7 +221,7 @@ static func make() -> Dictionary:
 		for sgn in [-1.0, 1.0]:
 			var sx: float = sgn
 			var hub := Node3D.new()
-			hub.position = Vector3((HALF_W - 0.17) * sx, WHEEL_R, AXLE_F if front else AXLE_R)
+			hub.position = Vector3((HALF_W - 0.09) * sx, WHEEL_R, AXLE_F if front else AXLE_R)
 			root.add_child(hub)
 			var roll := Node3D.new()
 			hub.add_child(roll)

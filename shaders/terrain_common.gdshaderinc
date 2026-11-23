@@ -9,6 +9,8 @@ uniform sampler2D turf_tex : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D turf_nrm : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D stone_tex : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D stone_nrm : filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D forest_tex : filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D forest_nrm : filter_linear_mipmap_anisotropic, repeat_enable;
 global uniform float wetness;            // 0 dry to 1 soaked (scripts/weather.gd)
 global uniform float snow;               // 0 bare ground to 1 winter (scripts/weather.gd, the season in the menu)
 uniform vec2 world_origin;
@@ -56,8 +58,23 @@ vec3 ground_colour(vec3 wpos, inout vec3 n, float h, float dist, out float rough
 
 	float near = (1.0 - smoothstep(25.0, 130.0, dist)) * (1.0 - lake) * (1.0 - road);
 	if (near > 0.01) {
-		vec3 dt = mix(texture(turf_tex, wpos.xz * 0.5).rgb, texture(stone_tex, wpos.xz * 0.33).rgb, stony);
-		vec3 dn = mix(texture(turf_nrm, wpos.xz * 0.5).xyz, texture(stone_nrm, wpos.xz * 0.33).xyz, stony) * 2.0 - 1.0;
+		// Photographs of the ground (tools/fetch_textures.py): turf in the open, the forest floor under trees, rock
+		// where it is bare or steep. Each is laid twice, the second time larger and turned, and the two are mixed by
+		// a slow noise, so that no tile is seen to repeat across a lawn.
+		vec2 p2 = vec2(wpos.x * 0.8 + wpos.z * 0.6, wpos.z * 0.8 - wpos.x * 0.6) * 0.173 + 0.31;
+		float which = smoothstep(0.35, 0.65, n1);
+		float wood = m.b * (1.0 - 0.6 * m2.r) * (1.0 - stony);
+		vec3 dt = mix(texture(turf_tex, wpos.xz * 0.5).rgb, texture(turf_tex, p2).rgb, which);
+		vec3 dn = mix(texture(turf_nrm, wpos.xz * 0.5).xyz, texture(turf_nrm, p2).xyz, which);
+		if (wood > 0.01) {
+			dt = mix(dt, mix(texture(forest_tex, wpos.xz * 0.5).rgb, texture(forest_tex, p2).rgb, which), wood);
+			dn = mix(dn, mix(texture(forest_nrm, wpos.xz * 0.5).xyz, texture(forest_nrm, p2).xyz, which), wood);
+		}
+		if (stony > 0.01) {
+			dt = mix(dt, mix(texture(stone_tex, wpos.xz * 0.37).rgb, texture(stone_tex, p2 * 0.7).rgb, which), stony);
+			dn = mix(dn, mix(texture(stone_nrm, wpos.xz * 0.37).xyz, texture(stone_nrm, p2 * 0.7).xyz, which), stony);
+		}
+		dn = dn * 2.0 - 1.0;
 		col *= mix(vec3(1.0), dt * 2.0, near * 0.85);
 		n = normalize(n + vec3(dn.x, 0.0, dn.y) * 0.55 * near);
 	}

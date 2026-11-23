@@ -240,6 +240,127 @@ func _sites() -> void:
 			for face4 in [-1.0, 1.0]:
 				mast2.append(B.call(Vector3(1.4, 0.42, 0.02), Vector3(0, 5.4 - 0.65 * float(row2), 0.15 * face4), Color(0.85, 0.20, 0.10) if row2 == 0 else white))
 		_stand(mast2, at2 + bs2 * Vector3(10.5, 0, 6.5), bs2, "PriceSign")
+	for s in sites.get("pumps", []):
+		# pumps with nobody minding them, in a row on a kerbed island each, under a narrow roof
+		# on columns in the company's black and yellow; a column to pay at between them, a price sign by the road
+		var pw: Array = s["at"]
+		var pal := Vector3(s["along"][0], 0, s["along"][1])
+		var pbs := Basis(pal.cross(Vector3.UP) * -1.0, Vector3.UP, pal)
+		var black := Color(0.05, 0.05, 0.06)
+		var uyel := Color(0.98, 0.80, 0.02)
+		var pumps_n: int = int(s.get("count", 2))
+		var gap := 5.2
+		var roof_l := gap * float(pumps_n) + 0.8
+		var pp := [B.call(Vector3(4.6, 0.30, roof_l), Vector3(0, 4.45, 0), white), B.call(Vector3(4.7, 0.55, roof_l + 0.1), Vector3(0, 4.40, 0), uyel),
+			B.call(Vector3(4.72, 0.12, roof_l + 0.12), Vector3(0, 4.20, 0), black)]
+		for kp in pumps_n:
+			var z3: float = (float(kp) - float(pumps_n - 1) * 0.5) * gap
+			var turned: bool = s.get("across", false)                  # each pump and its island lying across the row, not along it
+			var quarter := Basis(Vector3.UP, PI * 0.5) if turned else Basis()
+			pp.append(B.call(Vector3(1.3, 0.16, 3.4), Vector3(0, 0.08, z3), concrete, quarter))                      # the island
+			if kp == 0 or kp == pumps_n - 1 or pumps_n > 3:
+				pp.append(B.call(Vector3(0.30, 4.2, 0.30), Vector3(0, 2.1, z3 + 1.35 * (1.0 if z3 >= 0.0 else -1.0)), black))               # a column at its outer end
+			var pat := Vector3(0, 0, z3)
+			pp.append(B.call(Vector3(0.55, 1.75, 1.05), pat + Vector3(0, 1.03, 0), black, quarter))                  # the pump
+			pp.append(B.call(Vector3(0.57, 0.36, 1.07), pat + Vector3(0, 1.85, 0), uyel, quarter))
+			for face6 in [-1.0, 1.0]:
+				var f6: float = face6
+				pp.append(B.call(Vector3(0.02, 0.34, 0.60), pat + quarter * Vector3(0.285 * f6, 1.42, 0), Color(0.10, 0.16, 0.20), quarter))      # the display
+				pp.append(B.call(Vector3(0.02, 0.22, 0.30), pat + quarter * Vector3(0.285 * f6, 1.05, -0.22), Color(0.75, 0.76, 0.78), quarter))  # the card reader
+				for nz in 3:
+					pp.append(B.call(Vector3(0.08, 0.40, 0.08), pat + quarter * Vector3(0.32 * f6, 0.85, 0.12 + 0.16 * float(nz)), [black, Color(0.10, 0.45, 0.18), uyel][nz], quarter))   # the nozzles
+			pp.append(B.call(Vector3(0.45, 0.85, 0.45), Vector3(0, 0.58, z3 - 1.25 * (1.0 if z3 >= 0.0 else -1.0)), Color(0.20, 0.21, 0.23)))    # a bin, and the bucket for the windscreen
+		var court := _stand(pp, Vector3(pw[0], _ground(pw[0], pw[2]), pw[2]), pbs, "Pumps")
+		for face7 in [-1.0, 1.0]:
+			_words(str(s["name"]), Vector3(2.36 * float(face7), 4.40, 0), Vector3(float(face7), 0, 0), 0.38, black, court)
+		var totem := [B.call(Vector3(0.25, 5.0, 0.25), Vector3(0, 2.5, 0), black), B.call(Vector3(1.7, 1.2, 0.3), Vector3(0, 5.4, 0), uyel), B.call(Vector3(1.7, 1.9, 0.28), Vector3(0, 3.8, 0), black)]
+		for row3 in 3:
+			for face8 in [-1.0, 1.0]:
+				totem.append(B.call(Vector3(1.3, 0.38, 0.02), Vector3(0, 4.4 - 0.58 * float(row3), 0.15 * float(face8)), white))
+		var tm := _stand(totem, Vector3(pw[0], _ground(pw[0], pw[2]), pw[2]) + pbs * Vector3(4.5, 0, roof_l * 0.5 + 3.0), pbs, "PumpsSign")
+		for face9 in [-1.0, 1.0]:
+			_words(str(s["name"]), Vector3(0, 5.4, 0.16 * float(face9)), Vector3(0, 0, float(face9)), 0.34, black, tm)
+	for s in sites.get("glasshouse", []):
+		# a nursery's glasshouses: over the whole of the building, rows of low glazed gables side by side, white
+		# bars along every ridge and gutter and up the gable ends
+		var gc := Vector3(s["c"][0], float(s["eave"]), s["c"][1])
+		var gu := Vector3(s["u"][0], 0, s["u"][1])
+		var gbs := Basis(gu.cross(Vector3.UP) * -1.0, Vector3.UP, gu)          # local z along the building, local x across it
+		var ghl: float = s["hl"]
+		var ghw: float = s["hw"]
+		var spans := maxi(1, int(round(ghw * 2.0 / float(s["span"]))))
+		var sw := ghw * 2.0 / float(spans)
+		var rise3 := sw * 0.28
+		var pitch := atan2(rise3, sw * 0.5)
+		var slope_l := sqrt(rise3 * rise3 + sw * sw * 0.25)
+		var pane := Color(0.78, 0.86, 0.86)
+		var bar := Color(0.93, 0.94, 0.93)
+		var gparts := []
+		for k in spans:
+			var x0g := -ghw + sw * (float(k) + 0.5)
+			for sd2 in [-1.0, 1.0]:
+				var sg2: float = sd2
+				gparts.append(B.call(Vector3(slope_l, 0.05, ghl * 2.0), Vector3(x0g + sg2 * sw * 0.25, rise3 * 0.5, 0), pane, Basis(Vector3.BACK, -pitch * sg2)))
+				for e3 in [-1.0, 1.0]:                                       # the glazed gable end, in two halves
+					gparts.append(B.call(Vector3(sw * 0.5, rise3 * 0.5, 0.06), Vector3(x0g + sg2 * sw * 0.25, rise3 * 0.22, float(e3) * (ghl - 0.03)), pane))
+					gparts.append(B.call(Vector3(slope_l, 0.10, 0.10), Vector3(x0g + sg2 * sw * 0.25, rise3 * 0.5 + 0.03, float(e3) * ghl), bar, Basis(Vector3.BACK, -pitch * sg2)))
+			gparts.append(B.call(Vector3(0.10, 0.10, ghl * 2.0 + 0.1), Vector3(x0g, rise3 + 0.03, 0), bar))                    # the ridge
+			gparts.append(B.call(Vector3(0.16, 0.08, ghl * 2.0 + 0.1), Vector3(x0g - sw * 0.5, 0.04, 0), bar))                 # the gutter
+			var bars := int(ghl * 2.0 / 3.2)
+			for b4 in bars + 1:                                              # the glazing bars down each slope
+				var zb := -ghl + ghl * 2.0 * float(b4) / float(maxi(bars, 1))
+				for sd3 in [-1.0, 1.0]:
+					gparts.append(B.call(Vector3(slope_l, 0.07, 0.05), Vector3(x0g + float(sd3) * sw * 0.25, rise3 * 0.5 + 0.02, zb), bar, Basis(Vector3.BACK, -pitch * float(sd3))))
+		gparts.append(B.call(Vector3(0.16, 0.08, ghl * 2.0 + 0.1), Vector3(ghw, 0.04, 0), bar))
+		_stand(gparts, gc, gbs, "Glasshouse", false)
+	for s in sites.get("carwash", []):
+		# self-service car wash: bays side by side, open at both ends to drive through, under one flat roof;
+		# between them walls of pale panels, and in each a lance on its arm, the box one pays at, a grate in the floor
+		var cw: Array = s["at"]
+		var cal := Vector3(s["along"][0], 0, s["along"][1])
+		var cbs := Basis(cal, Vector3.UP, cal.cross(Vector3.UP))
+		var bays: int = int(s["bays"])
+		var bw := 4.6
+		var deep := 7.5
+		var tall2 := 3.5
+		var span := bw * float(bays)
+		var blue := Color(0.08, 0.30, 0.62)
+		var panel := Color(0.86, 0.88, 0.89)
+		var cparts := [B.call(Vector3(span + 0.5, 0.30, deep + 0.9), Vector3(0, tall2 + 0.15, 0), white),            # the roof
+			B.call(Vector3(span + 0.6, 0.55, deep + 1.0), Vector3(0, tall2 + 0.05, 0), blue),                              # its fascia
+			B.call(Vector3(span + 0.62, 0.08, deep + 1.02), Vector3(0, tall2 - 0.14, 0), yellow),
+			B.call(Vector3(span + 0.4, 0.10, deep + 0.4), Vector3(0, 0.05, 0), concrete)]                                  # the floor slab
+		for k in bays + 1:
+			var wx := -span * 0.5 + bw * float(k)
+			cparts.append(B.call(Vector3(0.16, tall2, deep), Vector3(wx, tall2 * 0.5, 0), panel))                          # a wall between two bays
+			cparts.append(B.call(Vector3(0.20, 0.9, deep + 0.04), Vector3(wx, 0.45, 0), Color(0.42, 0.44, 0.46)))           # its splashed foot
+			for e2 in [-1.0, 1.0]:
+				cparts.append(B.call(Vector3(0.24, tall2, 0.24), Vector3(wx, tall2 * 0.5, e2 * deep * 0.5), steel))        # the post at each end
+				cparts.append(B.call(Vector3(0.26, 0.9, 0.26), Vector3(wx, 0.45, e2 * deep * 0.5), yellow))                 # painted so that it is seen
+		for k in bays:
+			var bx2 := -span * 0.5 + bw * (float(k) + 0.5)
+			cparts.append(B.call(Vector3(2.4, 0.03, 4.6), Vector3(bx2, 0.115, 0), Color(0.16, 0.17, 0.18)))                # the grate
+			for g2 in 9:
+				cparts.append(B.call(Vector3(2.3, 0.02, 0.08), Vector3(bx2, 0.135, -2.0 + 0.5 * float(g2)), Color(0.34, 0.35, 0.36)))
+			var side_x := bx2 - bw * 0.5 + 0.20
+			cparts.append(B.call(Vector3(0.22, 0.75, 0.55), Vector3(side_x, 1.45, -1.2), Color(0.80, 0.81, 0.83)))          # where one pays and chooses
+			cparts.append(B.call(Vector3(0.02, 0.22, 0.34), Vector3(side_x + 0.12, 1.62, -1.2), Color(0.05, 0.08, 0.10)))   # its display
+			for b3 in 4:
+				cparts.append(B.call(Vector3(0.03, 0.07, 0.07), Vector3(side_x + 0.12, 1.36, -1.38 + 0.12 * float(b3)), [red, yellow, blue, Color(0.15, 0.55, 0.20)][b3]))
+			cparts.append(B.call(Vector3(0.10, 0.10, 0.10), Vector3(bx2, tall2 - 0.20, 0), steel))                          # the pivot under the roof
+			cparts.append(B.call(Vector3(1.9, 0.06, 0.06), Vector3(bx2 - 0.95, tall2 - 0.30, 0), steel))                     # the arm that swings round the car
+			cparts.append(B.call(Vector3(0.03, 1.9, 0.03), Vector3(bx2 - 1.88, tall2 - 1.25, 0), Color(0.06, 0.06, 0.07)))   # the hose down from it
+			cparts.append(B.call(Vector3(0.05, 0.05, 0.9), Vector3(side_x + 0.10, 1.05, 0.6), Color(0.75, 0.76, 0.78)))      # the lance in its holder
+			cparts.append(B.call(Vector3(0.06, 0.16, 0.10), Vector3(side_x + 0.10, 0.98, 0.2), Color(0.06, 0.06, 0.07)))
+			cparts.append(B.call(Vector3(0.05, 0.05, 0.8), Vector3(side_x + 0.10, 1.05, 1.9), Color(0.85, 0.20, 0.10)))      # and the brush
+			cparts.append(B.call(Vector3(0.10, 0.10, 0.22), Vector3(side_x + 0.10, 1.05, 2.4), Color(0.10, 0.25, 0.60)))
+			cparts.append(B.call(Vector3(0.9, 0.06, 0.25), Vector3(bx2, tall2 - 0.06, 0), white))                            # a strip light
+		var wash := _stand(cparts, Vector3(cw[0], _ground(cw[0], cw[2]), cw[2]), cbs, "CarWash")
+		for face5 in [-1.0, 1.0]:
+			_words("SELVVASK", Vector3(0, tall2 + 0.05, (deep * 0.5 + 0.52) * float(face5)), Vector3(0, 0, float(face5)), 0.36, white, wash)
+			for k in bays:
+				var nx2: float = (-span * 0.5 + bw * (float(k) + 0.5)) * float(face5)
+				_words(str(k + 1 if float(face5) > 0.0 else bays - k), Vector3(nx2, tall2 - 0.45, (deep * 0.5 + 0.13) * float(face5)), Vector3(0, 0, float(face5)), 0.30, blue, wash)
 	for s in sites.get("doors", []):
 		# the tall doors of a fire station: ribbed, with a row of windows across each
 		var colr := Color(s["colour"][0], s["colour"][1], s["colour"][2])
@@ -268,7 +389,7 @@ func _sites() -> void:
 		var th: float = s["tall"]
 		var tcol := Color(s["colour"][0], s["colour"][1], s["colour"][2])
 		var tparts := [B.call(Vector3(sd, th, sd), Vector3(0, th * 0.5, 0), tcol), B.call(Vector3(sd + 0.5, 0.25, sd + 0.5), Vector3(0, th + 0.12, 0), Color(0.25, 0.25, 0.26)),
-			B.call(Vector3(sd + 0.06, 0.5, sd + 0.06), Vector3(0, 0.25, 0), Color(0.40, 0.40, 0.41)), B.call(Vector3(1.0, 2.1, 0.08), Vector3(0, 1.05, sd * 0.5 + 0.02), red.darkened(0.2)),
+			B.call(Vector3(sd + 0.06, 0.9, sd + 0.06), Vector3(0, 0.05, 0), Color(0.40, 0.40, 0.41)), B.call(Vector3(1.0, 2.1, 0.08), Vector3(0, 1.05, sd * 0.5 + 0.02), red.darkened(0.2)),
 			B.call(Vector3(0.10, 3.0, 0.10), Vector3(0.8, th + 1.7, 0.8), steel)]
 		for face in 4:
 			var fb := Basis(Vector3.UP, PI * 0.5 * float(face))
@@ -301,6 +422,8 @@ func _sites() -> void:
 		var wmi: MeshInstance3D = null
 		if not wparts.is_empty():
 			wmi = _stand(wparts, Vector3(wc[0], wc[1], wc[2]), wb, "WallSign", s["door"])
+			if not s["door"]:
+				wmi.set_meta("on_wall", true)                 # a board up on a wall: not something that should stand on the ground
 		_words(text, Vector3(wc[0], float(wc[1]) + float(s["up"]), wc[2]) + wo * (0.20 if s["back"] != null else 0.12), wo, letters, ink)
 	for s in sites.get("construction", []):
 		_building_site(s)
@@ -309,8 +432,22 @@ func _sites() -> void:
 		var rng := RandomNumberGenerator.new()
 		rng.seed = 2611
 		var rr: float = s[2]
-		var y0 := _ground(s[0], s[1])
-		var bed := [world.props._cyl(rr, rr + 0.05, 0.16, 28, Vector3(0, 0.08, 0), Color(0.16, 0.12, 0.09)), world.props._cyl(rr - 0.25, rr - 0.1, 0.34, 28, Vector3(0, 0.30, 0), Color(0.13, 0.30, 0.12))]
+		# the island slopes with the road round it: the bed lies on that slope, not level at the middle's height,
+		# and its soil edge goes well into the ground so that no side of it hangs in the air
+		var y0 := 0.0
+		var tx := 0.0
+		var tz := 0.0
+		for k in 16:
+			var ca := cos(TAU * float(k) / 16.0)
+			var sa := sin(TAU * float(k) / 16.0)
+			var yk := _ground(float(s[0]) + ca * rr, float(s[1]) + sa * rr)
+			y0 += yk / 16.0
+			tx += yk * ca / (8.0 * rr)
+			tz += yk * sa / (8.0 * rr)
+		var up := Vector3(-tx, 1.0, -tz).normalized()
+		var ax := Vector3(1.0, tx, 0.0).normalized()
+		var lie := Basis(ax, up, ax.cross(up).normalized())
+		var bed := [world.props._cyl(rr, rr + 0.05, 0.76, 28, Vector3(0, -0.22, 0), Color(0.16, 0.12, 0.09)), world.props._cyl(rr - 0.25, rr - 0.1, 0.34, 28, Vector3(0, 0.30, 0), Color(0.13, 0.30, 0.12))]
 		for i2 in int(rr * rr * 3.14 * 14.0):
 			var ang := rng.randf() * TAU
 			var rad := sqrt(rng.randf()) * (rr - 0.35)
@@ -318,7 +455,7 @@ func _sites() -> void:
 			var colb := Color(0.72, 0.05, 0.08) if pick < 0.7 else (Color(0.90, 0.45, 0.55) if pick < 0.88 else Color(0.93, 0.90, 0.84))
 			var sz3 := rng.randf_range(0.07, 0.11)
 			bed.append(B.call(Vector3(sz3, sz3 * 0.8, sz3), Vector3(cos(ang) * rad, 0.50 + rng.randf_range(0.0, 0.10), sin(ang) * rad), colb))
-		_stand(bed, Vector3(s[0], y0, s[1]), Basis.IDENTITY, "RoseRound", false)
+		_stand(bed, Vector3(s[0], y0, s[1]), lie, "RoseRound", false)
 
 
 ## A building going up: so far its concrete floors on their columns, three storeys, a stair between them, props

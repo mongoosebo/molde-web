@@ -40,6 +40,16 @@ USE = {
     "slate": ("grey_roof_01", 0.55, 0.9),
     "seam": ("box_profile_metal_sheet", 0.79, 1.2),
     "brick": ("brick_wall_006", 0.62, 0.9),
+    # the ground ("more realistic textures for the ground, asphalt and pavement", 21 Nov): what one walks and drives
+    # on was still made from noise. The same rule as for walls: grey, at the brightness the game's own tints expect.
+    "asphalt": ("asphalt_track", 0.50, 1.7),
+    "slabs": ("large_square_pattern_01", 0.60, 0.9),
+    "paving": ("pavement_04", 0.42, 0.9),
+    "gravel": ("gravel_floor_02", 0.40, 0.9),
+    "path": ("floor_pebbles_01", 0.70, 0.8),
+    "turf": ("leafy_grass", 0.505, 0.9),
+    "forest": ("forrest_ground_01", 0.50, 0.9),
+    "rock": ("rock_face_03", 0.47, 0.9),
 }
 
 
@@ -73,9 +83,9 @@ def main():
         used.append((name, asset))
         print("  %-9s from %-26s brightness %.2f -> %.2f" % (name, asset, lum.mean(), out.mean()))
     with open(os.path.join(OUT, "CREDITS.md"), "w") as f:
-        f.write("# Textures\n\nThe building materials below are photographed textures from Poly Haven (https://polyhaven.com), which are CC0:\n"
+        f.write("# Textures\n\nThe materials below are photographed textures from Poly Haven (https://polyhaven.com), which are CC0:\n"
                 "free to use, no credit needed. They are listed all the same. Each was made grey and brought to the brightness\n"
-                "the game expects by `tools/fetch_textures.py`; the colour of a wall or roof is the building's own.\n\n"
+                "the game expects by `tools/fetch_textures.py`; the colour of a wall, a roof or the ground is the game's own.\n\n"
                 "| texture here | Poly Haven texture |\n|---|---|\n")
         for name, asset in used:
             f.write("| `%s_albedo.png`, `_normal.png`, `_rough.png` | [%s](https://polyhaven.com/a/%s) |\n" % (name, asset, asset))

@@ -2,7 +2,7 @@ extends Node
 ## Checks that run the game by themselves and quit (`./run.sh -- --bench` and so on). The older ones are in
 ## main.gd; the ones added with the plan of 18 November are here. tools/check.sh runs them all in turn.
 
-const KNOWN := ["--bench", "--jobs", "--winter", "--lamps", "--film", "--indoors", "--bridges"]
+const KNOWN := ["--bench", "--jobs", "--winter", "--lamps", "--film", "--indoors", "--bridges", "--standing", "--edges"]
 
 var m                               # main.gd
 
@@ -25,6 +25,10 @@ func run(main, what: String) -> void:
 			await _indoors()
 		"--bridges":
 			await _bridges()
+		"--standing":
+			await _standing()
+		"--edges":
+			await _edges()
 	get_tree().quit()
 
 
@@ -238,6 +242,11 @@ func _jobs() -> void:
 			while not jobs.active.is_empty() and int(jobs.active["step"]) == step_was and int(jobs.active.get("fares", 0)) == fares_was and waited < 600:
 				player.velocity = Vector3.ZERO
 				player.set("_drive_speed", 0.0)
+				# (held at the goal: put down crosswise on a road along a steep bank, the 12 m bus stood half on the
+				# bank and slid away from the stop at Bekkevollvegen, and the stop was never counted: 20 Nov)
+				if Vector2(player.global_position.x, player.global_position.z).distance_to(mk) > 4.0:
+					player.global_position = Vector3(mk.x, jobs.ground(mk) + 0.3, mk.y)
+					player.reset_physics_interpolation()
 				await get_tree().physics_frame
 				waited += 1
 			steps += 1
@@ -616,7 +625,8 @@ func _bridges() -> void:
 			var inner: Vector2 = pts[1] if e == 0 else pts[pts.size() - 2]
 			if at.length() > float(_arg("--within", "100000")) or float(way[0]) * 2.0 < float(_arg("--wider", "0")):
 				continue
-			ends.append({"way": w, "half": float(way[0]), "at": at, "out": (at - inner).normalized(), "y": hs[0] if e == 0 else hs[hs.size() - 1]})
+			ends.append({"way": w, "half": float(way[0]), "at": at, "out": (at - inner).normalized(), "y": hs[0] if e == 0 else hs[hs.size() - 1],
+				"walk": float(maxi(int(float(way[10 if e == 0 else 11])) / 1000, int(float(way[10 if e == 0 else 11])) % 1000)) / 10.0})
 	print("BRIDGES ", ends.size(), " ends of bridges")
 	var bad: Array = []
 	for en in ends:
@@ -642,6 +652,7 @@ func _bridges() -> void:
 		for r in rows:
 			var off := lerpf(-reach, reach, float(r) / float(rows - 1))
 			var deck_y := NAN
+			var last_y := NAN
 			for d in [-1.0, -0.3, 0.05, 0.25, 0.5, 0.8, 1.2, 1.8, 2.5]:
 				var q: Vector2 = at + out * float(d) + side * off
 				var ray := PhysicsRayQueryParameters3D.create(Vector3(q.x, float(en["y"]) + 2.5, q.y), Vector3(q.x, float(en["y"]) - 6.0, q.y))
@@ -658,22 +669,31 @@ func _bridges() -> void:
 				if float(d) < 0.0:
 					if what == "paved":
 						deck_y = y
+						last_y = y
 					continue
 				if r == rows / 2 and is_equal_approx(float(d), 1.2) and (what == "nothing" or (not is_nan(y) and y < float(en["y"]) - 1.5)):
 					wet_end = true
 				if what != "paved":
+					if at.distance_to(Vector2(5200.9, -1188.6)) < 1.0 and absf(off) < 2.0:
+						continue                                   # (Fannefjordsvegen: the grass of the island between the lanes)
 					gaps += 1
 					if where == "":
 						where = "%s %.1f m beyond, %.1f m off the middle" % [what, d, off]
-				elif not is_nan(deck_y) and float(d) <= 1.2 and absf(y - deck_y) > step:
-					step = absf(y - deck_y)
+				else:
+					# a step is a jump from one point to the next, 20 to 40 cm on (a road that climbs away from the
+					# bridge is not one), judged where cars go
+					if not is_nan(last_y) and float(d) <= 1.2 and absf(off) < half - float(en["walk"]) - 0.5 and absf(y - last_y) > step:
+						step = absf(y - last_y)
+						if OS.get_cmdline_user_args().has("--profile"):
+							print("   step %.2f at off %.1f, %.2f m beyond (walk %.1f)" % [step, off, d, float(en["walk"])])
+					last_y = y
 		en["gaps"] = gaps
 		en["step"] = step
 		if wet_end:
 			print("BRIDGES end at %7.1f %7.1f (%s): ends over the water, not judged" % [at.x, at.y, world.locate(at.x, at.y)["street"]])
 			continue
 		var paved_road: bool = road and gaps < rows * 4                 # (a gravel road has no paving to be whole)
-		if paved_road and (gaps > 0 or step > 0.12):
+		if paved_road and (gaps > 0 or step > 0.08):
 			bad.append(en)
 			print("BRIDGES end at %7.1f %7.1f (%s, %.1f m wide): ground showing at %d points (%s); the road within 1.2 m stands up to %.2f m off the deck" % [at.x, at.y, world.locate(at.x, at.y)["street"], half * 2.0, gaps, where, step])
 		elif not road and step > 0.25:
@@ -702,3 +722,135 @@ func _bridges() -> void:
 		shots += 1
 	print("BRIDGES ends of paved road bridges with a gap or a step: %d (of %d ends of all bridges)" % [bad.size(), ends.size()])
 	print("BRIDGES ", "OK" if bad.is_empty() else "PROBLEMS: %d" % bad.size())
+
+
+## The top of what one sees at a point: the paving where there is some, else the ground.
+func _top(x: float, z: float) -> float:
+	var t: float = m.world.detail.top_at(x, z)
+	return m.world.height_at(x, z) if is_nan(t) else t
+
+
+## `--standing`: does everything stand on the ground? For each bench, shelter, parked car, sign and so on
+## (world/props.bin), and each thing built by scripts/molde.gd, the corners of its foot are held against the
+## ground or paving under them. A corner more than 25 cm in the air, or a wide thing more than 45 cm into the
+## ground, is counted, by kind, with the worst of each named. `--shots` photographs the worst of each kind.
+func _standing() -> void:
+	var P = m.world.props
+	var names := {P.LAMP: "lamp", P.SHELTER: "bus shelter", P.BUS_SIGN: "bus sign", P.BENCH: "bench", P.FLAGPOLE: "flagpole", P.CAR: "parked car",
+		P.GIVE_WAY: "give-way sign", P.ROUND_SIGN: "round sign", P.CROSSING_SIGN: "crossing sign", P.SIGNAL: "signal", P.POST_BOX: "post box",
+		P.PICNIC: "picnic table", P.SWINGS: "swings", P.VIEWPOINT: "viewpoint railing", P.GIVE_WAY_ROUND: "give-way with roundabout sign",
+		P.NAME_SIGN: "street-name sign", P.PLANTER: "flower tub", P.AIRLINER: "airliner", P.PYLON: "pylon"}
+	var found := {}                 # name -> [count, in the air, sunk, worst gap, where]
+	var things: Array = []          # [name, Transform3D, half x, half z]
+	for ck in P.cells:
+		for e in P.cells[ck]:
+			var kind: int = e[0]
+			if not names.has(kind) or not (P.SOLID[kind] is Vector3):
+				continue
+			var sz: Vector3 = P.SOLID[kind]
+			var o: Vector3 = e[1].origin
+			if kind in P.LEVEL or kind == P.PYLON:
+				continue                    # stands level on concrete, or with its legs in the slope: as meant
+			things.append([names[kind], e[1], sz.x * (0.85 if kind == P.CAR else 1.0), sz.z * (0.65 if kind == P.CAR else 1.0)])
+	for child in m.molde.get_children():
+		if child is MeshInstance3D and child.mesh != null:
+			var bb: AABB = child.mesh.get_aabb()
+			if child.name == "RoseBed":                         # stands on the town hall's terrace, which is not the ground
+				continue
+			if child.has_meta("on_wall"):                       # a name board hung on a wall
+				continue
+			if bb.size.x > 8.0 or bb.size.z > 8.0:              # (a lane, a building site: not one thing on one spot)
+				continue
+			var xf: Transform3D = child.global_transform * Transform3D(Basis(), Vector3(bb.get_center().x, bb.position.y, bb.get_center().z))
+			things.append(["built: " + String(child.name), xf, bb.size.x * 0.5, bb.size.z * 0.5])
+	var worst := {}
+	for t in things:
+		var xf: Transform3D = t[1]
+		var hx: float = maxf(float(t[2]), 0.05)
+		var hz: float = maxf(float(t[3]), 0.05)
+		var up := -1000.0             # the highest any corner stands over the ground
+		var down := 1000.0            # the lowest
+		for c in [Vector3(-hx, 0, -hz), Vector3(hx, 0, -hz), Vector3(-hx, 0, hz), Vector3(hx, 0, hz), Vector3.ZERO]:
+			var q: Vector3 = xf * (c as Vector3)
+			var gap := q.y - _top(q.x, q.z)
+			up = maxf(up, gap)
+			down = minf(down, gap)
+		var name: String = t[0]
+		if not found.has(name):
+			found[name] = [0, 0, 0, 0.0, Vector3.ZERO, 0.0, Vector3.ZERO]
+		var f: Array = found[name]
+		f[0] += 1
+		var wide := hx > 0.3 or hz > 0.3
+		if up > 0.25:                 # (a kerb is 23 cm: a thing at the edge of one is not in the air)
+			f[1] += 1
+		if wide and down < -0.45:
+			f[2] += 1
+		if up > float(f[3]):
+			f[3] = up
+			f[4] = xf.origin
+		if wide and down < float(f[5]):
+			f[5] = down
+			f[6] = xf.origin
+	var bad := 0
+	var keys := found.keys()
+	keys.sort()
+	for name in keys:
+		var f: Array = found[name]
+		bad += int(f[1]) + int(f[2])
+		print("STANDING %-32s %6d  in the air: %5d  sunk: %5d  worst up %.2f at (%.0f, %.0f)  worst down %.2f at (%.0f, %.0f)" % [name, f[0], f[1], f[2], f[3], f[4].x, f[4].z, f[5], f[6].x, f[6].z])
+		if "--shots" in OS.get_cmdline_user_args() and (int(f[1]) > 0 or int(f[2]) > 0):
+			var at: Vector3 = f[4] if int(f[1]) > 0 else f[6]
+			await _go(Vector2(at.x + 5.0, at.z + 5.0))
+			m.player.yaw = PI * 0.25
+			m.player.pitch = -0.15
+			m.player._arm.spring_length = 3.0
+			await _frames(30)
+			await _shot("standing_%s.png" % String(name).replace(" ", "_").replace(":", ""))
+	print("STANDING ", "OK" if bad == 0 else "PROBLEMS", ": ", bad, " things in the air or sunk, of ", things.size())
+
+
+## `--edges`: a ride along the roads out of town, which are looked at least: the main road west to the tunnel,
+## east to the airport, and from there to the tunnel south. A picture every `--every=` metres (250) from over the
+## road, looking along it (data/edges_NNN.png), and for each the height of the asphalt under the camera against
+## the one 2 m on: a step of more than 15 cm is counted.
+func _edges() -> void:
+	var player = m.player
+	player.set_process_unhandled_input(false)
+	player.set_physics_process(false)
+	var every := float(_arg("--every", "250"))
+	var legs := [[Vector2(-560, 60), Vector2(-5800, 480)], [Vector2(2600, -480), Vector2(5600, -700)], [Vector2(5200, -1190), Vector2(5760, -3410)]]
+	var n := 0
+	var steps := 0
+	for leg in legs:
+		var route := PackedVector2Array()                 # (the way-finder reaches about a kilometre: in hops of 600 m)
+		var hops := maxi(1, int((leg[1] as Vector2).distance_to(leg[0]) / 600.0))
+		for h in hops:
+			route.append_array(m.traffic.route_points((leg[0] as Vector2).lerp(leg[1], float(h) / float(hops)), (leg[0] as Vector2).lerp(leg[1], float(h + 1) / float(hops))))
+		if route.size() < 4:
+			print("EDGES no route from ", leg[0], " to ", leg[1])
+			continue
+		var gone := every
+		for i in route.size() - 1:
+			var seg: Vector2 = route[i + 1] - route[i]
+			var ya: float = _top(route[i].x, route[i].y)
+			var yb: float = _top(route[i + 1].x, route[i + 1].y)
+			if seg.length() < 4.0 and absf(yb - ya) > 0.15 + seg.length() * 0.2:
+				steps += 1
+				print("EDGES step of %.2f m at (%.0f, %.0f)" % [yb - ya, route[i].x, route[i].y])
+			gone += seg.length()
+			if gone < every:
+				continue
+			gone = 0.0
+			var q := route[i]
+			player.global_position = Vector3(q.x, _top(q.x, q.y) + 0.6, q.y)
+			player.reset_physics_interpolation()
+			player.yaw = atan2(-seg.x, -seg.y)
+			player.pitch = -0.28
+			player._arm.spring_length = 11.0
+			m.world.update_streaming(player.global_position)
+			m.world.flush(player.global_position)
+			await _frames(12)
+			await _shot("edges_%03d.png" % n)
+			print("EDGES picture %03d at (%.0f, %.0f) %s" % [n, q.x, q.y, m.world.locate(q.x, q.y)["street"]])
+			n += 1
+	print("EDGES ", n, " pictures; steps along the road: ", steps)

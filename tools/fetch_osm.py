@@ -22,15 +22,20 @@ query = f"""[out:json][timeout:300];
 );
 out tags geom;"""
 out = os.path.join(ROOT, "data", "osm_raw.json")
-for host in ("https://overpass-api.de", "https://overpass.private.coffee", "https://overpass.kumi.systems"):
-    subprocess.run(["curl", "-s", "-m", "300", "-A", "map-builder/1.0", "--data-urlencode", "data=" + query,
+if "--lakes" in sys.argv:
+    # "out tags geom" leaves a relation's members out, so the lakes drawn as relations (most of the larger ones) came
+    # without an outline. They are fetched by themselves, whole, into their own file; tools/build_map.py joins them in.
+    query = f'[out:json][timeout:120];relation["natural"="water"]{bbox};out geom;'
+    out = os.path.join(ROOT, "data", "osm_water_rel.json")
+for host in ("https://overpass-api.de", "https://overpass.private.coffee", "https://overpass.kumi.systems", "https://maps.mail.ru/osm/tools/overpass"):
+    subprocess.run(["curl", "-s", "-m", "150" if "--lakes" in sys.argv else "300", "-A", "map-builder/1.0", "--data-urlencode", "data=" + query,
                     "-o", out + ".part", host + "/api/interpreter"])
     try:
         n = len(json.load(open(out + ".part"))["elements"])
     except (OSError, ValueError, KeyError):
         print("no answer from", host)
         continue
-    if n > 1000:
+    if n > (5 if "--lakes" in sys.argv else 1000):
         os.replace(out + ".part", out)
         print(n, "elements")
         break

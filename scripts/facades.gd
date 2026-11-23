@@ -174,14 +174,14 @@ func _init() -> void:
 	mats = {
 		"clad": _wall("cladding", 2.0, 0.85),
 		"plaster": _wall("plaster", 2.0, 0.92),
-		"roof": _textured("gravel", 1.5, 0.85),
+		"roof": _textured("gravel", 2.0, 0.85),
 		"cladv": _wall("cladv", 2.0, 0.85),
 		"tiles": _wall("rooftile", 2.0, 0.8, 0.0, true, 1.0),
 		"sheet": _wall("sheet", 2.0, 0.45, 0.35, true, 0.3),
 		"asphalt": _asphalt(),
 		"wear": _film(),
-		"sidewalk": _textured("slabs", 2.0, 0.9),
-		"path": _textured("path", 2.0, 0.95),
+		"sidewalk": _textured("slabs", 3.0, 0.9),
+		"path": _textured("path", 3.0, 0.95),
 		"metal": _plain(0.45, 0.35),
 		"trim": _plain(0.6, 0.0),
 		"mark": _paint(),
@@ -210,6 +210,8 @@ func _textured(tex: String, tile_m: float, rough: float) -> StandardMaterial3D:
 	m.normal_enabled = true
 	m.normal_texture = _tex(tex + "_normal")
 	m.roughness = rough
+	if FileAccess.file_exists(TEX_DIR + tex + "_rough.png"):
+		m.roughness_texture = _tex(tex + "_rough")              # (the photograph's own dull and smooth places)
 	m.vertex_color_use_as_albedo = true
 	m.vertex_color_is_srgb = true
 	m.uv1_triplanar = true
@@ -259,6 +261,7 @@ func _asphalt() -> ShaderMaterial:
 	m.shader = load("res://shaders/asphalt.gdshader")
 	m.set_shader_parameter("albedo_tex", _tex("asphalt_albedo"))
 	m.set_shader_parameter("normal_tex", _tex("asphalt_normal"))
+	m.set_shader_parameter("rough_tex", _tex("asphalt_rough"))
 	m.set_shader_parameter("noise_tex", _wear_noise())
 	return m
 
@@ -535,6 +538,23 @@ func build(mb: MB, rec: Dictionary) -> void:
 		if d.length() > 1.2:
 			var c := peak + d.normalized() * 0.8
 			mb.box("plaster", Vector3(c.x, peak.y - 0.1, c.z), Vector3.RIGHT, Vector3.UP, Vector3.BACK, Vector3(0.3, 0.85, 0.3), Color(0.5, 0.33, 0.27))
+			mb.box("trim", Vector3(c.x, peak.y + 0.78, c.z), Vector3.RIGHT, Vector3.UP, Vector3.BACK, Vector3(0.36, 0.04, 0.36), Color(0.20, 0.20, 0.21))
+	# dormers, where the laser shows one standing up out of the roof (tools/roofs.py): a box in the wall's colour
+	# with a window to the front, under a lid of the roof's own
+	for dm in rf.get("d", []):
+		var da: Array = dm
+		var d_out := Vector3(da[5], 0, da[6])
+		var d_along := Vector3(-d_out.z, 0, d_out.x)
+		var d_top: float = da[2]
+		var d_base: float = da[7]
+		var d_hw: float = float(da[3]) * 0.5
+		var d_hd: float = float(da[4]) * 0.5
+		var d_c := Vector3(da[0], 0, da[1])
+		mb.box(wall_m, d_c + Vector3(0, (d_top + d_base) * 0.5 - 0.6, 0), d_along, Vector3.UP, d_out, Vector3(d_hw, (d_top - d_base) * 0.5 + 0.6, d_hd), wall)
+		mb.box("trim", d_c + Vector3(0, d_top + 0.06, 0), d_along, Vector3.UP, d_out, Vector3(d_hw + 0.18, 0.06, d_hd + 0.18), roof)
+		var d_ww := minf(d_hw * 0.7, 0.6)
+		mb.box("glass", d_c + d_out * (d_hd + 0.01) + Vector3(0, d_top - 0.6, 0), d_along, Vector3.UP, d_out, Vector3(d_ww, 0.4, 0.02), Color(0.42, 0.52, 0.56))
+		mb.box("trim", d_c + d_out * (d_hd + 0.005) + Vector3(0, d_top - 0.6, 0), d_along, Vector3.UP, d_out, Vector3(d_ww + 0.07, 0.47, 0.015), trim)
 
 
 ## Storeys with a row of windows each, on the stretch s0..s1 of a wall between the heights lo and level. Used

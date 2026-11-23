@@ -18,6 +18,8 @@ os.makedirs(OUT, exist_ok=True)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from area import LAT0, LON0, MX, MZ, X0, X1, Z0, Z1, to_latlon   # the game area and its frame
 import overrides                                # corrections made by hand, from notes left in the game
+import nvdb                                     # what the national road database knows (tools/nvdb.py)
+import sign_faces
 
 CELL = 10.0                                     # height grid spacing
 GW = int((X1 - X0) / CELL) + 1
@@ -40,6 +42,15 @@ def blur(arr, radius):
     """Gaussian blur of a float array in [0,1] via PIL."""
     im = Image.fromarray(np.clip(arr * 255, 0, 255).astype(np.uint8))
     return np.asarray(im.filter(ImageFilter.GaussianBlur(radius))).astype(np.float32) / 255.0
+
+
+import time as _time
+import builtins as _bi
+_t_start = _time.time()
+
+
+def print(*a, **k):                                       # every line of the log says how far into the build it was written
+    _bi.print("[%4.0f s]" % (_time.time() - _t_start), *a, **k)
 
 
 print("elevation…")
@@ -129,6 +140,9 @@ def draw_line(draw, points, width_m):
         draw.ellipse((x - r, y - r, x + r, y + r), fill=255)
 
 
+green_rings = []
+
+
 def cover(t, ring, hole=False):
     """Paint what the map says covers the ground inside an outline (or clear it again, for a hole)."""
     p = px(ring)
@@ -136,6 +150,9 @@ def cover(t, ring, hole=False):
         return
     fill = 0 if hole else 255
     nat, lu, ls = t.get("natural"), t.get("landuse"), t.get("leisure")
+    if not hole and len(ring) >= 4 and (nat in ("water", "wood", "scrub", "wetland") or lu in ("grass", "forest", "meadow", "farmland", "cemetery", "flowerbed", "village_green")
+                                        or ls in ("park", "garden", "pitch", "playground")):
+        green_rings.append(list(ring))                     # what the map itself says is green or water: never paved by a guess
     if nat == "water":
         d_lake.polygon(p, fill=fill)
         if not hole:
@@ -225,9 +242,15 @@ for e in list(elements):
             elements.append({"type": "way", "id": 10 ** 10 + e["id"] * 10 + k, "tags": e["tags"],
                              "geometry": [{"lat": la, "lon": lo} for la, lo in ring]})
 
-# woods, lakes, bogs and fields mapped as relations: every outer ring, less the holes
+# woods, lakes, bogs and fields mapped as relations: every outer ring, less the holes. (The map data came with the
+# relations' names but not their outlines, so no lake drawn as a relation was there: "there is supposed to be a
+# small lake here, Øverlandsvatnet", 20 Nov. tools/fetch_osm.py now fetches the lakes' outlines by themselves.)
+_rel_path = os.path.join(DATA, "osm_water_rel.json")
+_rel_geom = {e["id"]: e.get("members", []) for e in json.load(open(_rel_path))["elements"]} if os.path.exists(_rel_path) else {}
 for e in elements:
     t = e.get("tags", {})
+    if e["type"] == "relation" and "members" not in e and e["id"] in _rel_geom and e["id"] not in overrides.NO_WATER_RELATIONS:
+        e["members"] = _rel_geom[e["id"]]
     if e["type"] == "relation" and "building" not in t and (t.get("natural") or t.get("landuse")):
         for role, hole in (("outer", False), ("inner", True)):
             lines = [LineString([to_xz(g["lat"], g["lon"]) for g in m["geometry"]]) for m in e.get("members", [])
@@ -290,6 +313,8 @@ _pond_ids = {q["way"] for q in overrides.PONDS}
 ponds = []
 _fuel = [to_xz(e["lat"], e["lon"]) for e in elements if e["type"] == "node" and e.get("tags", {}).get("amenity") == "fuel"]
 _drop = set(overrides.DROP_WAYS)
+for _pts, _lv, _mg in overrides.LEVEL_SITES:               # ground someone who knows the place says is level
+    print("  site levelled by hand at %.0f, %.0f: %.2f m" % (_pts[0][0], _pts[0][1], level_site(_pts, _lv, _mg)))
 _wanted_ids = {v for v in overrides.SPORTS.values() if isinstance(v, int)}
 wanted, coasts, canopy_ways = {}, [], []
 for k, ring in enumerate(overrides.PARKING):
@@ -573,6 +598,17 @@ def _register_outlines():
 
 
 import shapely.affinity
+
+
+def tidy(g, least=0.05):
+    """A paved outline without what the cutting and joining leave behind: lines and points that are no area, and
+    holes smaller than `least` m2 (70,000 holes of under a square centimetre lay in the asphalt after the build of
+    20 Nov, and each cut or join of it then took 40 s instead of a tenth of a second)."""
+    out = []
+    for q in shapely.get_parts(g):
+        if q.geom_type == "Polygon" and not q.is_empty:
+            out.append(shapely.Polygon(q.exterior, [h for h in q.interiors if shapely.Polygon(h).area >= least]) if len(q.interiors) else q)
+    return shapely.multipolygons(out) if out else shapely.Polygon()
 _register_outlines()
 
 # roads.bin (float32): per way [n, half width, kind, markings] then n x [x, z, sidewalk left, sidewalk right, height].
@@ -742,18 +778,29 @@ print("grading roads…")
 _road_lines = [(LineString(w[5]), w[1]) for w in road_ways if w[0] == 0 and len(w[5]) >= 2]
 _road_tree = shapely.STRtree([q[0] for q in _road_lines])
 _zebra_tree = shapely.STRtree([LineString(w[5]) for w in road_ways if w[0] == 2 and len(w[5]) >= 2] or [LineString([(1e9, 1e9), (1e9 + 1, 1e9)])])
-n_zebra = 0
-for t, x, z in osm_nodes:
+n_zebra = n_zebra_nv = 0
+# (and the crossings the road database has that the map has not, the same way: its point is the middle of the crossing)
+_nv_cross = [r for r in nvdb.inside(nvdb.load(174), 20) if r["p"].get("Markering av striper") != "Ikke striper"]
+_zebra_new = []
+for src, t, x, z in [(0, t, x, z) for t, x, z in osm_nodes] + [(1, {"highway": "crossing"}, r["x"], r["z"]) for r in _nv_cross]:
     if t.get("highway") != "crossing" or t.get("crossing") == "unmarked" or t.get("crossing:markings") == "no":
         continue
     pt = shapely.Point(x, z)
-    if len(_zebra_tree.query_nearest(pt, max_distance=4.0)) or not inside(x, z, 20):
+    if len(_zebra_tree.query_nearest(pt, max_distance=4.0 if src == 0 else 8.0)) or not inside(x, z, 20):
         continue
-    hit = _road_tree.query_nearest(pt, max_distance=2.0)
+    if src == 1 and any(math.hypot(x - qx, z - qz) < 8.0 for qx, qz in _zebra_new):
+        continue
+    hit = _road_tree.query_nearest(pt, max_distance=2.0 if src == 0 else 4.0)
     if not len(hit):
         continue
     line, half = _road_lines[int(hit[0])]
     s0 = line.project(pt)
+    if src == 1:
+        if s0 < 3.0 or s0 > line.length - 3.0:
+            continue                                       # (at the very end of a road: in the junction)
+        x, z = line.interpolate(s0).x, line.interpolate(s0).y
+        n_zebra_nv += 1
+    _zebra_new.append((x, z))
     a, b = line.interpolate(max(s0 - 1.0, 0.0)), line.interpolate(min(s0 + 1.0, line.length))
     ln = math.hypot(b.x - a.x, b.y - a.y)
     if ln < 0.5:
@@ -761,7 +808,7 @@ for t, x, z in osm_nodes:
     nx, nz = (b.y - a.y) / ln, -(b.x - a.x) / ln
     road_ways.append([2, 2.0, 0, False, False, [(x - nx * (half + 0.3), z - nz * (half + 0.3)), (x + nx * (half + 0.3), z + nz * (half + 0.3))], False])
     n_zebra += 1
-print("  zebra crossings added from points:", n_zebra)
+print("  zebra crossings added from points:", n_zebra, "of them from the road database:", n_zebra_nv)
 
 # A crossing is painted on asphalt only: each one is cut down to the stretch (or stretches, where there is
 # an island or a verge in the middle) that lies on a carriageway. One that touches no road is dropped.
@@ -930,7 +977,7 @@ for wid, pts in pitch_ways:
             v = np.array([-u[1], u[0]])
             if (np.array(sd["toward"]) - c) @ v < 0:
                 v = -v
-            front = c + v * (hw + 3.0)
+            front = c + v * (hw + 3.0) + u * sd.get("shift", 0.0)
             f["stands"].append([round(float(front[0]), 2), round(float(front[1]), 2), round(float(u[0]), 4), round(float(u[1]), 4),
                                 round(float(v[0]), 4), round(float(v[1]), 4), sd["length"], sd["rows"], 1, round(level, 2), 0.0])
     fields.append(f)
@@ -1458,6 +1505,9 @@ shapely.prepare(_core_sw)
 _kept, n_bgone, n_btrim = [], 0, 0
 for _t, _pts, _id in buildings_raw:
     poly = SPoly(_pts)
+    if _id in overrides.KEEP_BUILDINGS:
+        _kept.append((_t, _pts, _id))
+        continue
     if len(_pts) >= 3 and poly.is_valid and (poly.area < 60 or _id in overrides.TRIM_BUILDINGS) and shapely.intersects(_core_sw, poly) and poly.intersection(_core_sw).area > 0.15:
         rest = poly.difference(_core_sw_wide).buffer(-0.4).buffer(0.4, join_style="mitre")
         rest = max(getattr(rest, "geoms", [rest]), key=lambda g: g.area) if not rest.is_empty else rest
@@ -1554,6 +1604,7 @@ if _fills:
     side = side.difference(road_all.buffer(-0.05))
 # Unpaved ground closed in by paving that is paved too, says someone who knows the place: the pocket of open
 # ground round each point (as far as the paving, the buildings, or the given distance) becomes asphalt or slabs.
+_pocket_geom = {}
 for _pts, _as_road in ((overrides.ASPHALT_POCKETS, True), (overrides.PAVING_POCKETS, False)):
     _got = []
     for x, z, r in _pts:
@@ -1564,6 +1615,7 @@ for _pts, _as_road in ((overrides.ASPHALT_POCKETS, True), (overrides.PAVING_POCK
         part = [g for g in getattr(reach, "geoms", [reach]) if g.geom_type == "Polygon" and g.distance(shapely.Point(x, z)) < 1.5]
         if part:
             _got.append(part[0].buffer(0.3))
+            _pocket_geom[(x, z)] = part[0].buffer(0.3)
         else:
             print("  no open ground to pave at", x, z)
     if _got and _as_road:
@@ -1582,6 +1634,7 @@ _patches += [("paving", g) for g in _sunk_strips if not g.is_empty]
 # fairly sure of is laid (a large empty lot may be gravel, and is left); it never takes sidewalk away, and what
 # is marked by hand, above and below, is applied after it and so wins. overrides.AUTO_PAVED_NOT: places
 # (x, z) whose find is wrong and is left out.
+_found_au = None
 _apath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "auto_paved.json")
 if os.path.exists(_apath):
     _auto = []
@@ -1608,8 +1661,47 @@ if os.path.exists(_apath):
             _au = _au.difference(unary_union(_not))
             print("  found asphalt kept off squares and walking streets: %d m2" % (_a_was - _au.area))
         _au = _au.buffer(-0.8, quad_segs=3).buffer(0.8, quad_segs=3)
+        # What makes sense for asphalt (note of 20 Nov: "make a system"). The laser and the satellite find a yard
+        # as a blot with a scalloped edge, with bays, fingers and a strip of grass left against every wall. A yard
+        # is not like that: so (1) a bay or a gap up to six metres wide between found asphalt and a road, a wall or
+        # more asphalt is asphalt too, (2) a bump or finger under five metres wide and under 30 m2 is not asphalt
+        # (a longer narrow piece is a drive, and stays), (3) the edge is drawn straight between its corners.
+        # Never over what the map itself says is green or water.
+        _green = unary_union([g for g in (SPoly(q).buffer(0) for q in green_rings) if not g.is_empty]) if green_rings else SPoly()
+        _ctx = unary_union([road_all, side, bld_union])
+        _both = unary_union([_ctx, _au])
+        _bays = _both.buffer(3.0, quad_segs=3).buffer(-3.0, quad_segs=3).difference(_both)
+        _aub = _au.buffer(0.3)
+        shapely.prepare(_aub)
+        _bays = [g for g in getattr(_bays, "geoms", [_bays]) if g.geom_type == "Polygon" and g.area > 0.2 and _aub.intersects(g)
+                 and g.intersection(_green).area < 0.3 * g.area]
+        _a_bays = sum(g.area for g in _bays)
+        _au = unary_union([_au] + _bays)
+        _core = _au.buffer(-2.5, quad_segs=3).buffer(2.5, quad_segs=3)
+        _thin = _au.difference(_core)
+        _drives = [g for g in getattr(_thin, "geoms", [_thin]) if g.geom_type == "Polygon" and g.area >= 30.0]
+        _a_bumps = _thin.area - sum(g.area for g in _drives)
+        _au = unary_union([_core] + _drives).simplify(0.45).buffer(0)
+        _au = _au.difference(side.buffer(0.05)).difference(bld_union.buffer(0.3)).difference(_green).intersection(map_box)
+        if _not:
+            _au = _au.difference(unary_union(_not))
+        print("  found asphalt given the outline of a yard: bays and gaps filled %d m2, bumps and fingers taken off %d m2" % (_a_bays, _a_bumps))
+        del _ctx, _both, _aub, _core, _thin
         road_all = unary_union([road_all, _au])
+        # (the straightened edge of the found asphalt no longer lies exactly on the edge of the road beside it: that
+        # left 66,000 hairline holes in the asphalt, each a few centimetres wide, and every later step that cuts
+        # or joins the asphalt took 40 s instead of 1. Holes under 2 m2, and slivers, are closed here.)
+        _n_before = sum(len(g.interiors) for g in shapely.get_parts(road_all) if g.geom_type == "Polygon")
+        road_all = unary_union([shapely.Polygon(g.exterior, [h for h in g.interiors if shapely.Polygon(h).area >= 2.0 and 4.0 * shapely.Polygon(h).area / h.length >= 0.5])
+                                for g in shapely.get_parts(road_all) if g.geom_type == "Polygon"])
+        print("  hairline holes in the asphalt closed: %d of %d" % (_n_before - sum(len(g.interiors) for g in shapely.get_parts(road_all) if g.geom_type == "Polygon"), _n_before))
+        if os.environ.get("MOLDE_DUMP"):
+            import pickle as _pk0
+            _pk0.dump({"road_all": road_all.wkb, "side": side.wkb, "au": _au.wkb}, open(os.path.join(DATA, "dbg_au.pkl"), "wb"))
+            sys.exit(3)
+        _found_au = _au
         print("  asphalt found from the laser ground and satellite pictures: %d places, %d m2" % (len(_auto), _au.area))
+_marked_pav = []          # paving someone marked with the tool (kept, also where it lies across a road)
 _ppath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "patches.jsonl")
 # The squares from the tool are markers, not the shape itself (said 18 Nov): they show where the surface is to be.
 # So a run of squares of one kind is taken together: the gaps between them and the pockets between them and the
@@ -1647,6 +1739,8 @@ if os.path.exists(_ppath):
             _patches.append((_kind, _u))
             continue
         _near = _u.buffer(5.0)
+        if _kind == "paving":
+            _marked_pav.append(_u.buffer(1.0))
         _have = (road_all if _kind == "asphalt" else side).intersection(_near)
         _full = unary_union([_u, _have]).buffer(3.0, quad_segs=4).buffer(-3.0, quad_segs=4)
         _full = unary_union([shapely.Polygon(g.exterior, [h for h in g.interiors if shapely.Polygon(h).area > 150.0])
@@ -1662,6 +1756,197 @@ if os.path.exists(_ppath):
         if _kind == "asphalt":
             _marked.append(_full)
     print("  marked with the tool: %d runs of squares, %d m2 of asphalt; marked paving kept off the carriageway: %d m2" % (len(_runs), sum(g.area for g in _marked), _kept_off))
+# What the national road database (tools/nvdb.py) knows that the map does not: traffic islands with a kerb, sidewalks
+# where nothing is laid, and which roads are gravel. Each is taken only where it plainly fits the roads as they are
+# drawn here; what was marked with the tool is laid after these, and so stays as marked.
+_nv = []
+_ways0 = [w for w in road_ways if w[0] == 0 and len(w[5]) >= 2 and id(w[5]) not in pedestrian_ids]
+_lanes = []
+for w in _ways0:
+    _l = LineString(w[5])
+    _tg = tags_of.get(id(w[5]), {})
+    if _tg.get("oneway") == "yes" or _tg.get("junction") == "roundabout":
+        _lanes.append(_l)
+    else:
+        for _o in (w[1] / 2, -w[1] / 2):
+            _q = _l.offset_curve(_o)
+            if not _q.is_empty:
+                _lanes.append(_q)
+_lane_tree = shapely.STRtree(_lanes)
+n_isl = n_isl_way = n_isl_have = 0
+_nv_isles = []
+for r in nvdb.inside(nvdb.load(49), 20):
+    _pr = r["p"]
+    if len(r["pts"]) < 8 or _pr.get("Utforming") != "Fysisk m kantstein" or "Sentraløy" in str(_pr.get("Type")) or "Grønt" in str(_pr.get("Belegning")):
+        continue
+    g = SPoly(list(zip(r["pts"][0::2], r["pts"][1::2])))
+    g = g if g.is_valid else g.buffer(0)
+    if g.is_empty or not 4.0 <= g.area <= 400.0 or not g.buffer(1.5).intersects(road_all):
+        continue
+    if 4.0 * g.area / g.length < 1.5 and g.length > 30.0:
+        continue                                           # a long strip under 1.5 m wide: a line down the road, as the roads are drawn here
+    core = g.buffer(-0.45)
+    if core.is_empty:
+        continue
+    if side.intersection(g).area > 0.5 * g.area:
+        n_isl_have += 1                                    # there already
+    elif len(_lane_tree.query(core, predicate="intersects")):
+        n_isl_way += 1                                     # where the cars drive, as the road is drawn here
+    else:
+        _nv.append(("paving", g.buffer(-0.1)))
+        _nv_isles.append(g)
+        n_isl += 1
+_carr0 = unary_union([LineString(w[5]).buffer(w[1] + 0.1, cap_style="flat") for w in _ways0])
+_side_b = side.buffer(0.3)
+n_sw, a_sw, n_sw_side = 0, 0.0, 0
+_way0_lines = [LineString(w[5]) for w in _ways0]
+_way0_tree = shapely.STRtree(_way0_lines)
+_slab_says = []                                            # where the database says a sidewalk is of slabs or stone, not asphalt
+for r in nvdb.inside(nvdb.load(48), 20):
+    if len(r["pts"]) >= 4 and any(q in str(r["p"].get("Belegning")) for q in ("heller", "stein", "Granitt", "mønstret", "Skifer")):
+        _slab_says.append(LineString(list(zip(r["pts"][0::2], r["pts"][1::2]))).buffer((r["p"].get("Bredde, gjennomsnitt") or 2.5) / 2 + 2.0))
+for r in nvdb.inside(nvdb.load(48), 20):
+    _wd = r["p"].get("Bredde, gjennomsnitt")
+    if len(r["pts"]) < 4 or not _wd or not 1.2 <= _wd <= 5.0:
+        continue
+    _l = LineString(list(zip(r["pts"][0::2], r["pts"][1::2])))
+    if _l.length < 10.0:
+        continue
+    if _l.intersection(_carr0).length > 0.3 * _l.length:
+        # drawn along the middle of its road: laid along the edge on the side the database names (right or left
+        # of the way its line runs; that reading holds for 87 % of the sidewalks that are drawn in their place)
+        if r.get("side") not in ("H", "V") or _l.length < 15.0:
+            continue
+        _hw = [_ways0[int(i)][1] for i in _way0_tree.query(_l.buffer(1.0), predicate="intersects")
+               if _way0_lines[int(i)].intersection(_l.buffer(2.0)).length > 0.5 * min(_l.length, _way0_lines[int(i)].length)]
+        if not _hw:
+            continue
+        _off = max(_hw) + 0.1 + _wd / 2
+        _a, _b = _l.interpolate(0.5, normalized=True), _l.interpolate(0.52, normalized=True)
+        _rx, _rz = -(_b.y - _a.y), (_b.x - _a.x)                   # to the right of the way the line runs
+        _sg = 1.0 if r["side"] == "H" else -1.0
+        _best = None
+        for _o in (_off, -_off):
+            _q = _l.offset_curve(_o)
+            if _q.is_empty or _q.geom_type != "LineString":
+                continue
+            _m = _q.interpolate(0.5, normalized=True)
+            if ((_m.x - _a.x) * _rx + (_m.y - _a.y) * _rz) * _sg > 0:
+                _best = _q
+        if _best is None:
+            continue
+        _l = _best
+        n_sw_side += 1
+    _sw = _l.buffer(_wd / 2, cap_style="flat").difference(_carr0)
+    if _sw.intersection(_side_b).area > 0.5 * _sw.area or _sw.area < 0.5 * _l.length * _wd:
+        continue                                           # a sidewalk is there already, or most of it would lie in the carriageway
+    # (asphalt that is not carriageway gives way to it: 52 stretches lay on yards and verges the game had as asphalt)
+    _sw = _sw.difference(road_all.buffer(0.05))
+    _nv.append(("paving", _sw))
+    n_sw += 1
+    a_sw += _sw.area
+# A foot or cycle path that the map draws along the very edge of a road is that road's sidewalk: its asphalt melts
+# into the carriageway and nothing is left to walk on ("pavement down this straight", Kåre Solhjells veg, 20 Nov).
+# Each stretch of 25 m or more that runs inside the edge of a road (not a service road) is laid as a sidewalk
+# beside that road, on the side the path is on, as wide as the path.
+n_edge, a_edge = 0, 0.0
+_road_i = [i for i, w in enumerate(_ways0) if tags_of.get(id(w[5]), {}).get("highway") not in ("service", None)]
+_edge_zone = unary_union([_way0_lines[i].buffer(_ways0[i][1] + 2.6, cap_style="flat") for i in _road_i])      # (the path's own asphalt touches the road's: no verge between them)
+shapely.prepare(_edge_zone)
+_road_set = set(_road_i)
+for w in road_ways:
+    if w[0] != 3 or len(w[5]) < 2:
+        continue
+    _pl = LineString(w[5])
+    _dbg = os.environ.get("MOLDE_DEBUG") and _pl.distance(shapely.Point(590.0, 36.0)) < 3.0
+    if _dbg:
+        print("   DBG path", round(_pl.length), _edge_zone.intersects(_pl), len(_road_i), w[1])
+    if not _edge_zone.intersects(_pl):
+        continue
+    # (cut against the few roads near by, not against every road in town at once: that took twenty minutes)
+    _near_z = [_way0_lines[int(i)].buffer(_ways0[int(i)][1] + 2.6, cap_style="flat") for i in _way0_tree.query(_pl.buffer(8.0), predicate="intersects") if int(i) in _road_set]
+    if not _near_z:
+        continue
+    _in = _pl.intersection(unary_union(_near_z))
+    if _dbg:
+        print("   DBG parts", _in.geom_type, [round(q.length) for q in getattr(_in, "geoms", [_in])])
+    for _part in getattr(_in, "geoms", [_in]):
+        if _part.geom_type != "LineString" or _part.length < 25.0:
+            continue
+        _wd = max(2.0 * w[1], 2.0)
+        _best, _bl = None, 0.0
+        for i in _way0_tree.query(_part.buffer(8.0), predicate="intersects"):
+            if int(i) not in _road_set:
+                continue
+            _cov = _part.intersection(_way0_lines[int(i)].buffer(_ways0[int(i)][1] + 2.7, cap_style="flat")).length
+            if _cov > _bl:
+                _best, _bl = int(i), _cov
+        if _dbg:
+            print("   DBG best", _best, round(_bl))
+        if _best is None or _bl < 20.0:
+            continue
+        _rl, _hw = _way0_lines[_best], _ways0[_best][1]
+        # (only the stretch along this road: the part may run on into the edge of another road)
+        _own = _part.intersection(_rl.buffer(_hw + 2.7, cap_style="flat"))
+        _own = max((q for q in getattr(_own, "geoms", [_own]) if q.geom_type == "LineString"), key=lambda q: q.length, default=None)
+        if _own is None or _own.length < 20.0:
+            continue
+        _part = _own
+        _s0, _s1 = sorted((_rl.project(shapely.Point(_part.coords[0])), _rl.project(shapely.Point(_part.coords[-1]))))
+        if _s1 - _s0 < 20.0:
+            continue
+        _seg = shapely.ops.substring(_rl, _s0, _s1)
+        _mid = _part.interpolate(0.5, normalized=True)
+        if _rl.distance(_mid) < 0.5 * _hw:
+            continue                                       # (down the middle of the road: not a path along its edge)
+        # how far out the path runs: its asphalt must touch the road's (no verge of 0.8 m or more between them), and
+        # the sidewalk reaches from the road's edge to the path's outer edge
+        _dm = float(np.mean([_rl.distance(_part.interpolate(t_, normalized=True)) for t_ in (0.1, 0.3, 0.5, 0.7, 0.9)]))
+        if _dm > _hw + w[1] + 0.8:
+            continue
+        _wd = min(max(_dm + w[1] - _hw - 0.1, 1.8), 4.5)
+        _cands = [q for q in (_seg.offset_curve(_hw + 0.1 + _wd / 2), _seg.offset_curve(-(_hw + 0.1 + _wd / 2))) if not q.is_empty and q.geom_type == "LineString"]
+        if not _cands:
+            continue
+        _ln = min(_cands, key=lambda q: q.distance(_mid))
+        _sw = _ln.buffer(_wd / 2, cap_style="flat").difference(_carr0)
+        if _dbg:
+            print("   DBG strip", round(_dm, 2), round(_wd, 2), round(_ln.length), round(_sw.area), round(_sw.intersection(_side_b).area), round(_ln.length * _wd))
+        if _sw.is_empty or _sw.intersection(_side_b).area > 0.5 * _sw.area or _sw.area < 0.5 * _ln.length * _wd:
+            continue
+        _nv.append(("paving", _sw))
+        n_edge += 1
+        a_edge += _sw.area
+print("  paths drawn along the edge of a road, laid as that road's sidewalk: %d stretches, %d m2" % (n_edge, a_edge))
+n_gr, a_gr = 0, 0.0
+for r in nvdb.inside(nvdb.load(241), 20):
+    if r["p"].get("Massetype") != "Grus" or (r["p"].get("Dekkebredde, gjennomsnitt") or 0) < 3.0 or len(r["pts"]) < 4:
+        continue
+    _l = LineString(list(zip(r["pts"][0::2], r["pts"][1::2])))
+    if _l.length < 40.0:
+        continue
+    _near = shapely.ops.substring(_l, 8.0, _l.length - 8.0).buffer(5.0)       # (the last metres at each end are the junction with a paved road)
+    _parts = []
+    for w in _ways0:
+        _q = LineString(w[5])
+        if _q.intersects(_near):
+            _q = _q.intersection(_near)
+            if _q.length >= 20.0:
+                _parts.append(_q.buffer(w[1] + 0.8, cap_style="flat"))
+    if _parts:
+        _g = unary_union(_parts)
+        _gravel_marks.append(_g)
+        _nv.append(("none", _g))
+        n_gr += 1
+        a_gr += _g.area
+print("  from the road database: traffic islands laid %d (there already %d, in the way of traffic %d); sidewalks laid %d (%d of them along the side of the road the database names), %d m2; gravel roads %d, %d m2" % (n_isl, n_isl_have, n_isl_way, n_sw, n_sw_side, a_sw, n_gr, a_gr))
+_patches = _nv + _patches
+# areas set by hand: asphalt (a drive, parking places), and bare gravel
+_patches += [("asphalt", SPoly(q)) for q in overrides.ASPHALT_AREAS]
+for q in overrides.GRAVEL_AREAS:
+    _gravel_marks.append(SPoly(q))
+    _patches.append(("none", SPoly(q)))
+del _lanes, _lane_tree
 for _kind, _shape in _patches:
     if _kind == "island":
         # (the piece of paving the point lies on, as far as 16 m from it)
@@ -1681,6 +1966,7 @@ for _kind, _shape in _patches:
         side = side.difference(_shape)
 if _patches:
     print("  patches of asphalt, paving or bare ground:", len(_patches))
+road_all, side = tidy(road_all), tidy(side)
 # the asphalt that is laid on the ground: the same, without the thin spikes and slivers that the cutting-out of
 # buildings and the melting-together of shapes leave along its edge
 road_laid = road_all.buffer(-0.6, quad_segs=3).buffer(0.6, quad_segs=3)
@@ -1694,7 +1980,134 @@ if road_decks:                                             # a road deck is its 
     # a scrap of sidewalk left standing against a deck (a corner the deck did not quite take) goes too
     side = unary_union([g for g in getattr(side, "geoms", [side]) if g.geom_type == "Polygon" and (g.area > 20.0 or g.distance(_deck_area) > 0.5)])
     road_laid = road_laid.difference(_deck_cut)
+    # the road is as wide as the deck where it comes onto it: a corner of grass stood in the carriageway at the
+    # ends of five bridges (Fannefjordsvegen, Mekvegen, Øvre veg: the bridge check of 19 Nov)
+    _ends = []
+    for dk in road_decks:
+        _dl = LineString(dk[0])
+        if _dl.length < 1.6:
+            continue
+        for _a, _b in ((dk[0][1], dk[0][0]), (dk[0][-2], dk[0][-1])):
+            _t = np.array(_b, float) - np.array(_a, float)
+            _t = _t / max(float(np.hypot(*_t)), 1e-6)
+            _r = LineString([np.array(_b) - _t * 0.4, np.array(_b) + _t * 3.0]).buffer(dk[3] + 0.3, cap_style="flat")
+            if _r.intersection(road_laid).area > 0.4 * _r.area:      # (a road does come here: not an end over water)
+                _ends.append(_r)
+    if _ends:
+        _add = unary_union(_ends).difference(side).difference(_deck_cut).difference(road_laid)
+        print("  asphalt laid in the corners where a road meets its bridge: %.0f m2" % _add.area)
+        road_laid = unary_union([road_laid, _add])
 side = unary_union([g for g in getattr(side, "geoms", [side]) if g.geom_type == "Polygon" and g.area > 3.0])
+# A drive or a side road that crosses a sidewalk crosses it as asphalt (a lowered kerb), not over the slabs and
+# their 23 cm kerb: the road check found sidewalk in the carriageway at Moldegårdsvegen (19 Nov). Paving marked
+# with the tool stays as it was marked.
+_keep = unary_union(_marked_pav) if _marked_pav else None
+_cuts = []
+for w in road_ways:
+    if w[0] != 0 or not w[6] or len(w[5]) < 2 or id(w[5]) in pedestrian_ids:
+        continue
+    _x = LineString(w[5]).intersection(side)
+    for _g in getattr(_x, "geoms", [_x]):
+        if _g.geom_type == "LineString" and 0.8 < _g.length < 14.0 and (_keep is None or not _g.intersects(_keep)):
+            _cuts.append(_g.buffer(max(w[1] - 0.1, 1.2), cap_style="flat").buffer(0.3, quad_segs=2))
+if _cuts:
+    _cuts = unary_union(_cuts).intersection(side)
+    side = side.difference(_cuts)
+    side = unary_union([g for g in getattr(side, "geoms", [side]) if g.geom_type == "Polygon" and g.area > 3.0])
+    road_laid = unary_union([road_laid, _cuts])
+    print("  sidewalk taken up where a drive crosses it: %.0f m2" % _cuts.area)
+# A bus stop stands on something: where its sign or shelter would stand on bare ground, a kerbed platform is laid
+# from the edge of the road out past it, nine metres along the road (asked for on 20 Nov: "the bus stops need to
+# be on either pavement or have a small asphalt pocket connected to the road").
+_bus_at = []
+_bstops = [(x, z) for t, x, z in osm_nodes if t.get("highway") == "bus_stop"]
+_bsh = [(r["x"], r["z"]) for r in nvdb.inside(nvdb.load(25), 8)]
+if _bstops and _bsh:
+    _bt = cKDTree(_bstops)
+    _took = {}
+    for q in _bsh:
+        d, i = _bt.query(q)
+        if d < 30.0:
+            _took.setdefault(int(i), []).append((d, q))
+        else:
+            _bus_at.append(q)
+    for i, q in enumerate(_bstops):
+        if i in _took:
+            _bus_at.extend(v for _d, v in _took[i])
+        else:
+            _bus_at.append(q)
+else:
+    _bus_at = _bstops + _bsh
+_pads = []
+for x, z in _bus_at:
+    if not inside(x, z, 8) or height_at(x, z) <= 0.6:
+        continue
+    _pt = shapely.Point(x, z)
+    _near = _way0_tree.query_nearest(_pt, max_distance=40.0)
+    if not len(_near):
+        continue
+    _i = max((int(q) for q in _near), key=lambda q: _ways0[q][1])
+    _wl, _hw = _way0_lines[_i], _ways0[_i][1]
+    _al = _wl.project(_pt)
+    _f, _g2 = _wl.interpolate(_al), _wl.interpolate(min(_al + 0.5, _wl.length))
+    if _g2.equals(_f):
+        _g2, _f2 = _f, _wl.interpolate(max(_al - 0.5, 0.0))
+        _tx, _tz = _g2.x - _f2.x, _g2.y - _f2.y
+    else:
+        _tx, _tz = _g2.x - _f.x, _g2.y - _f.y
+    _tn = math.hypot(_tx, _tz)
+    if _tn < 1e-6:
+        continue
+    _tx, _tz = _tx / _tn, _tz / _tn
+    _ac = (x - _f.x) * -_tz + (z - _f.y) * _tx                 # to the right of the way the road runs
+    _sgn = 1.0 if _ac >= 0 else -1.0
+    _nx, _nz = -_tz * _sgn, _tx * _sgn
+    _far = max(abs(_ac), _hw + 2.4) + 1.6
+    _nr = _hw - 0.3 if _far <= _hw + 12.0 else abs(_ac) - 2.0  # (a stop far from its road gets a platform of its own)
+    _pads.append(SPoly([(_f.x + _tx * a + _nx * b, _f.y + _tz * a + _nz * b) for a, b in ((-4.5, _nr), (4.5, _nr), (4.5, _far), (-4.5, _far))]))
+n_pad = 0
+if _pads:
+    _have = unary_union([road_laid, road_all, side]).buffer(0.05)
+    _new = []
+    for _g in _pads:
+        _q = _g.difference(_have).difference(bld_union.buffer(0.3)).intersection(map_box)
+        if road_decks:
+            _q = _q.difference(_deck_area)
+        _q = _q.buffer(-0.4).buffer(0.4, join_style=2)
+        if not _q.is_empty and _q.area >= 3.0:
+            _new.append(_q)
+            n_pad += 1
+    if _new:
+        side = unary_union([side] + _new)
+print("  bus stops: %d, given a platform to stand on: %d" % (len(_bus_at), n_pad))
+# Found asphalt in a nook of the town's slab sidewalks is sidewalk too: a small piece that is not part of any road,
+# with sidewalk and walls round at least three quarters of it, where the sidewalks are of slabs ("where is the
+# pavement here?", Rutebilholdeplassen, 20 Nov). Elsewhere such a piece is somebody's forecourt and stays asphalt.
+n_nook = 0
+if _found_au is not None:
+    _slabz = list(_slab_says) + [SPoly(q).buffer(0).buffer(3.0) for _ped, q in road_areas if _ped and len(q) >= 3]
+    _slabz += [LineString(w[5]).buffer(w[1] + 3.0) for w in road_ways if id(w[5]) in pedestrian_ids and len(w[5]) >= 2]
+    if plaza_poly is not None:
+        _slabz.append(plaza_poly.buffer(60.0))
+    _slabz = unary_union(_slabz).buffer(4.0) if _slabz else SPoly()
+    shapely.prepare(_slabz)
+    _own = _found_au.intersection(road_laid).difference(_carr0.buffer(0.3))
+    _nooks = []
+    for _g in getattr(_own, "geoms", [_own]):
+        if _g.geom_type != "Polygon" or not 2.0 < _g.area < 300.0 or not _slabz.intersects(_g):
+            continue
+        _rim = _g.buffer(0.5).difference(_g)
+        _rs, _rb = _rim.intersection(side).area, _rim.intersection(bld_union).area
+        if _rs + _rb > 0.75 * _rim.area and _rs > 0.25 * _rim.area:
+            _nooks.append(_g)
+    if _nooks:
+        n_nook = len(_nooks)
+        _nk = unary_union(_nooks)
+        side = unary_union([side, _nk])
+        road_laid = road_laid.difference(_nk.buffer(-0.05))
+        road_all = road_all.difference(_nk.buffer(-0.05))
+        _slab_says.append(_nk.buffer(0.5))
+print("  found asphalt in a nook of the slab sidewalks, laid as sidewalk:", n_nook)
 # No slits and no pinholes: a strip of ground under about two metres wide between two paved surfaces (or between
 # paving and a wall), and a small patch wholly closed in by paving, is paved over with asphalt.
 _pv = unary_union([road_laid, side] + ([_deck_area] if road_decks else []))
@@ -1702,19 +2115,66 @@ shapely.prepare(_pv)
 _ba = np.asarray(_blds, dtype=object)
 _walls = unary_union(list(_ba[shapely.dwithin(_ba, _pv, 1.3)])).buffer(0.02)       # the buildings that stand at the paving
 _shut = unary_union([_pv, _walls])
-_fill = [_shut.buffer(0.9, quad_segs=3).buffer(-0.9, quad_segs=3).difference(_shut)]
+_closed = _shut.buffer(0.9, quad_segs=3).buffer(-0.9, quad_segs=3)
+_fill = [_closed.difference(_shut)]
 _isles = []
+# (a patch of up to 40 m2: the ones just over the 14 m2 this stopped at before stood as round tufts of grass in car
+# parks and yards, 248 of them, "many places in the asphalt that has small holes", 20 Nov. The middle of a
+# roundabout is left alone.)
+_rounds = unary_union([SPoly(q.exterior) for q in polygonize(unary_union([LineString(pts) for pts, _h in round_lines]))]) if round_lines else SPoly()
+# A larger patch of bare ground with asphalt all round it (up to 450 m2) is asphalt as well, when it lies in a yard
+# and not along a road: no more than a third of its rim is carriageway, the map has nothing green there, and no
+# house stands in it (a garden inside a drive that goes round the house stays). Notes of 20 Nov, Moldegård to Einen.
+_cway = unary_union([LineString(w[5]).buffer(w[1] + 0.5, cap_style="flat") for w in _ways0
+                     if tags_of.get(id(w[5]), {}).get("highway") not in ("service", None)])
+shapely.prepare(_cway)
+_green_u = unary_union([g for g in (SPoly(q).buffer(0) for q in green_rings) if not g.is_empty]) if green_rings else SPoly()
+shapely.prepare(_green_u)
+n_yard = [0, 0.0]
+
+
+def _yard_patch(h):
+    if h.area < 40.0:
+        return False
+    free = h.difference(_walls)                            # (the open ground: what stands built in it does not count)
+    if free.is_empty or not 20.0 <= free.area < 450.0:
+        return False
+    if h.intersection(_green_u).area > 0.3 * h.area:
+        return False
+    if h.area - free.area > 0.05 * h.area and 4.0 * free.area / free.length >= 6.0:
+        # something is built in it. A garden round a house is broad; the strip of ground left round a shed or a
+        # hall in a yard is narrow (under about 3 m), and is paved like the yard
+        return False
+    rim = h.buffer(0.5).difference(h)
+    if rim.intersection(_cway).area > 0.35 * rim.area:
+        return False
+    n_yard[0] += 1
+    n_yard[1] += free.area
+    return True
+
+
+n_holes_closed = 0
+for _p in getattr(_closed, "geoms", [_closed]):            # (with the slits shut first: most of them hung on the outside by a hairline)
+    if _p.geom_type != "Polygon":
+        continue
+    for _ring in _p.interiors:
+        _h = SPoly(_ring)
+        if 0.3 < _h.area < 40.0 and not _h.intersects(_rounds) and _h.difference(_walls).area > 0.3 * _h.area:
+            _fill.append(_h)
+            n_holes_closed += 1
 for _p in getattr(_pv, "geoms", [_pv]):
     for _ring in _p.interiors:
         _h = SPoly(_ring)
         if any(_h.distance(shapely.Point(x_, z_)) < 1.0 for k_, x_, z_, r_ in overrides.PATCHES if k_ == "island"):
             _fill.append(_h)                               # (one that someone who knows the place says is asphalt)
-        elif _h.area < 14.0 or 4.0 * _h.area / _h.length < 2.2:
-            if _h.area >= 3.0 and not _h.buffer(-0.6).is_empty and _h.distance(side) > 0.3:
+        elif _h.intersects(_rounds):
+            continue
+        elif _h.area < 40.0 or 4.0 * _h.area / _h.length < 2.2 or _yard_patch(_h):
+            if 3.0 <= _h.area < 14.0 and not _h.buffer(-0.6).is_empty and _h.distance(side) > 0.3:
                 _isles.append(_h)                          # a traffic island: kerbed paving, not asphalt
             else:
                 _fill.append(_h)
-_fill = unary_union(_fill).difference(_walls).difference(side)
+_fill = unary_union([shapely.set_precision(g.buffer(0), 0.001) for g in _fill if not g.is_empty]).difference(_walls).difference(side)      # (on a 1 mm grid: the larger patches made GEOS give up on the union)
 if _isles:
     _fill = _fill.difference(unary_union(_isles))
 if road_decks:
@@ -1722,19 +2182,24 @@ if road_decks:
 _fill = unary_union([g for g in getattr(_fill, "geoms", [_fill]) if g.geom_type == "Polygon" and g.area > 0.01]).intersection(map_box)
 # each piece takes after what it lies against most: slabs beside a sidewalk, asphalt beside a road
 _to_side, _to_road = [], []
-_sp, _rp = list(getattr(side, "geoms", [side])), list(getattr(road_laid, "geoms", [road_laid]))
+_sp = [q for g in getattr(side, "geoms", [side]) for q in shapely.get_parts(shapely.make_valid(g)) if q.geom_type == "Polygon"]      # (made valid: one piece of sidewalk crossed itself, and GEOS stopped)
+_rp = [q for g in getattr(road_laid, "geoms", [road_laid]) for q in shapely.get_parts(shapely.make_valid(g)) if q.geom_type == "Polygon"]
 _st, _rt = shapely.STRtree(_sp), shapely.STRtree(_rp)
 for _g in getattr(_fill, "geoms", [_fill]):
     _rim = _g.buffer(0.12)
+    _rim = shapely.make_valid(_rim)
     _as = sum(_rim.intersection(_sp[i]).area for i in _st.query(_rim))
     _ar = sum(_rim.intersection(_rp[i]).area for i in _rt.query(_rim))
     if _as + _ar > 0.0:                                    # (a nook between two walls that touches no paving stays as it is)
         (_to_side if _as > _ar else _to_road).append(_g)
 print("  slits and pinholes paved over: %.0f m2 (%d as asphalt, %d as sidewalk)" % (sum(g.area for g in _to_road + _to_side), len(_to_road), len(_to_side)))
-road_laid = unary_union([road_laid] + _to_road)
-road_all = unary_union([road_all] + _to_road)
+road_laid = tidy(unary_union([road_laid] + _to_road))
+road_all = tidy(unary_union([road_all] + _to_road))
 side = unary_union([side] + _to_side + _isles)
-print("  traffic islands kept as kerbed paving:", len(_isles))
+print("  traffic islands kept as kerbed paving:", len(_isles), " patches closed in by paving and a wall, paved over:", n_holes_closed)
+print("  larger patches of bare ground inside a yard, paved over: %d, %d m2" % (n_yard[0], n_yard[1]))
+if os.environ.get("MOLDE_STOP"):
+    sys.exit(3)
 
 # A gravel path is not drawn across paving: where its line runs over asphalt or a sidewalk, the path stops at
 # the edge and takes up again on the far side. The paved paths are in the asphalt already. (roads.bin was
@@ -1754,10 +2219,12 @@ while _i + 4 <= len(_ro):
     if int(_head[2]) == 4 and _head[1] > 2.0 and _n >= 2:
         # a road bridge: how wide the sidewalk is on each side where the road comes onto it, so that the game
         # can carry it on over the deck (the fourth number of the first point: tenths of a metre, a thousand
-        # times the left one and the right one). A sidewalk at one end only is carried over all the same.
+        # times the left one and the right one; the last point has the same for the far end, and the game goes
+        # evenly from the one to the other). A sidewalk at one end only is carried over all the same.
         _hf = float(_head[1])
-        _wide = [0.0, 0.0]
+        _wide2 = [[0.0, 0.0], [0.0, 0.0]]                        # at each end: left, right
         for _e in (0, 1):
+            _wide = _wide2[_e]
             _p = _rows[0, :2] if _e == 0 else _rows[-1, :2]
             _q = _rows[1, :2] if _e == 0 else _rows[-2, :2]
             _t = (_q - _p) if _e == 0 else (_p - _q)             # the way the deck's line runs
@@ -1779,7 +2246,11 @@ while _i + 4 <= len(_ro):
                 if _started:
                     _wide[_k] = max(_wide[_k], min(_run * 0.25 + 0.15, _hf - 2.6))
         _rows = _rows.copy()
-        _rows[0, 3] = round(max(_wide[0], 0.0) * 10) * 1000 + round(max(_wide[1], 0.0) * 10)
+        for _k in (0, 1):                                        # a sidewalk at one end only keeps that width all the way
+            if _wide2[0][_k] < 0.4: _wide2[0][_k] = _wide2[1][_k]
+            if _wide2[1][_k] < 0.4: _wide2[1][_k] = _wide2[0][_k]
+        _rows[0, 3] = round(max(_wide2[0][0], 0.0) * 10) * 1000 + round(max(_wide2[0][1], 0.0) * 10)
+        _rows[-1, 3] = round(max(_wide2[1][0], 0.0) * 10) * 1000 + round(max(_wide2[1][1], 0.0) * 10)
         if _rows[0, 3] > 0:
             _n_walks += 1
         _out.append(_head); _out.append(_rows.ravel())
@@ -1824,10 +2295,53 @@ _a0 = road_laid.area
 road_laid = _u.buffer(0.05, join_style=2).buffer(-0.05, join_style=2).difference(side).difference(bld_union.buffer(0.05)).intersection(map_box)
 if road_decks:
     road_laid = road_laid.difference(_deck_cut)
+    # the road is as wide as the deck where it comes onto it: a corner of grass stood in the carriageway at the
+    # ends of five bridges (Fannefjordsvegen, Mekvegen, Øvre veg: the bridge check of 19 Nov)
+    _ends = []
+    for dk in road_decks:
+        _dl = LineString(dk[0])
+        if _dl.length < 1.6:
+            continue
+        for _a, _b in ((dk[0][1], dk[0][0]), (dk[0][-2], dk[0][-1])):
+            _t = np.array(_b, float) - np.array(_a, float)
+            _t = _t / max(float(np.hypot(*_t)), 1e-6)
+            _r = LineString([np.array(_b) - _t * 0.4, np.array(_b) + _t * 3.0]).buffer(dk[3] + 0.3, cap_style="flat")
+            if _r.intersection(road_laid).area > 0.4 * _r.area:      # (a road does come here: not an end over water)
+                _ends.append(_r)
+    if _ends:
+        _add = unary_union(_ends).difference(side).difference(_deck_cut).difference(road_laid)
+        print("  asphalt laid in the corners where a road meets its bridge: %.0f m2" % _add.area)
+        road_laid = unary_union([road_laid, _add])
 road_laid = shapely.multipolygons([g for g in shapely.get_parts(road_laid) if g.geom_type == "Polygon" and g.area > 1e-6])
 print("  hairline slits between paved outlines closed: %.1f m2 of asphalt added" % (road_laid.area - _a0))
 del _u
 
+# What a sidewalk is made of. Nine tenths of the sidewalks of Molde are asphalt behind a kerb (the road database:
+# 25.8 km of asphalt, 2.5 km of slabs and stone); the game drew slabs everywhere. Slabs stay where the database
+# says slabs or stone, on what was marked as paving with the tool, on squares and walking streets and around
+# them, and on traffic islands. The game is told by 2 m squares (meta "slabs").
+_sz = list(_slab_says) + list(_marked_pav) + [q.buffer(0.3) for q in _isles] + [q.buffer(0.3) for q in _nv_isles]
+_sz += [SPoly(q).buffer(0).buffer(3.0) for _ped, q in road_areas if _ped and len(q) >= 3]
+_sz += [LineString(w[5]).buffer(w[1] + 3.0) for w in road_ways if id(w[5]) in pedestrian_ids and len(w[5]) >= 2]
+if plaza_poly is not None:
+    _sz.append(plaza_poly.buffer(30.0))
+slab_cells = []
+if _sz:
+    _szu = unary_union(_sz).buffer(1.0)
+    _sl = side.intersection(_szu)
+    _seen = set()
+    for _g in getattr(_sl, "geoms", [_sl]):
+        if _g.is_empty or _g.geom_type != "Polygon":
+            continue
+        bx0, bz0, bx1, bz1 = _g.bounds
+        gx, gz = np.meshgrid(np.arange(math.floor(bx0 / 2.0) - 1, math.floor(bx1 / 2.0) + 2), np.arange(math.floor(bz0 / 2.0) - 1, math.floor(bz1 / 2.0) + 2))
+        gx, gz = gx.ravel(), gz.ravel()
+        ok = shapely.contains_xy(_szu, gx * 2.0 + 1.0, gz * 2.0 + 1.0)
+        for cx_, cz_ in zip(gx[ok].tolist(), gz[ok].tolist()):
+            if (cx_, cz_) not in _seen:
+                _seen.add((cx_, cz_))
+                slab_cells += [int(cx_), int(cz_)]
+    print("  sidewalk of slabs or stone: %d m2 of %d m2; the rest is asphalt behind a kerb" % (_sl.area, side.area))
 # kept for the road sweep (tools/sweep.py), which compares these outlines with pictures of the finished ground
 import pickle as _pk
 _pk.dump({"road_all": shapely.to_wkb(road_all), "road_laid": shapely.to_wkb(road_laid), "side": shapely.to_wkb(side),
@@ -1921,20 +2435,36 @@ def pieces_laid(q):
     return np.stack([q[:, 0], ya, q[:, 1], q[:, 4], q[:, 5], q[:, 2], yb, q[:, 3], q[:, 6], q[:, 7]], 1).astype(np.float32)
 
 
+def _clip(g, x0, z0, x1, z1):
+    """A geometry cut to a box. (clip_by_rect is quick but stops on a ring that has collapsed to a line, which the
+    cutting itself can leave behind: then the slow, exact way, on the geometry put right.)"""
+    try:
+        return shapely.clip_by_rect(g, x0, z0, x1, z1)
+    except shapely.errors.GEOSException:
+        if g.geom_type not in ("Polygon", "MultiPolygon"):
+            return shapely.make_valid(g).intersection(shapely.box(x0, z0, x1, z1))
+        ok = [q for q in shapely.get_parts(shapely.make_valid(g)) if q.geom_type in ("Polygon", "MultiPolygon")]
+        return unary_union(ok).intersection(shapely.box(x0, z0, x1, z1)) if ok else SPoly()
+
+
 def cells_of(geom):
     """The parts of a geometry in each 100 m cell that it touches."""
     if geom.is_empty:
         return
+    if geom.geom_type in ("Polygon", "MultiPolygon"):
+        geom = unary_union([q for q in shapely.get_parts(shapely.make_valid(geom)) if q.geom_type in ("Polygon", "MultiPolygon")])
+        if geom.is_empty:
+            return
     x0, z0, x1, z1 = geom.bounds
     for tx in range(int(x0 // 1000), int(x1 // 1000) + 1):
         for tz in range(int(z0 // 1000), int(z1 // 1000) + 1):
-            tile = shapely.clip_by_rect(geom, tx * 1000, tz * 1000, tx * 1000 + 1000, tz * 1000 + 1000)
+            tile = _clip(geom, tx * 1000, tz * 1000, tx * 1000 + 1000, tz * 1000 + 1000)
             if tile.is_empty:
                 continue
             a0, b0, a1, b1 = tile.bounds
             for cx in range(int(a0 // 100), int(a1 // 100) + 1):
                 for cz in range(int(b0 // 100), int(b1 // 100) + 1):
-                    part = shapely.clip_by_rect(tile, cx * 100, cz * 100, cx * 100 + 100, cz * 100 + 100)
+                    part = _clip(tile, cx * 100, cz * 100, cx * 100 + 100, cz * 100 + 100)
                     if not part.is_empty:
                         yield (cx, cz), part
 
@@ -2136,6 +2666,54 @@ H1[_spike] = _low[_spike]
 del _low, _spike
 
 
+def fill_pits(when):
+    """A few points of dry land standing at the depth of the sea bed, with ground all round them, are a pit one
+    can fall into and see the water through (note of 20 Nov, by the harbour): they take the ground's height."""
+    _lab, _n = ndimage.label(H1 < -2.0)
+    _nf = 0
+    for _k, _sl in enumerate(ndimage.find_objects(_lab), 1):
+        _m = _lab[_sl] == _k
+        if _m.sum() >= 60:
+            continue
+        _j0, _j1 = max(_sl[0].start - 2, 0), min(_sl[0].stop + 2, FH)
+        _i0, _i1 = max(_sl[1].start - 2, 0), min(_sl[1].stop + 2, FW)
+        _m = _lab[_j0:_j1, _i0:_i1] == _k
+        _ring = ndimage.binary_dilation(_m, iterations=2) & ~_m
+        _sub = H1[_j0:_j1, _i0:_i1]
+        if _ring.any() and float(np.median(_sub[_ring])) > 0.3:
+            _sub[_m] = float(np.median(_sub[_ring]))
+            _nf += 1
+    print("  pits down to the sea bed in dry land, filled (%s): %d" % (when, _nf))
+
+
+fill_pits("before the paving")
+
+# A pocket paved by hand that lies in a pit which is not there (overrides.FILL_POCKETS; "there is no hole here,
+# make it plane with the asphalt", 20 Nov, by Moldetrappa): its ground is lifted to a sheet stretched between
+# the heights of the asphalt round it, nearest asphalt counting most.
+for _x, _z in overrides.FILL_POCKETS:
+    _g = _pocket_geom.get((_x, _z))
+    if _g is None:
+        print("  no pocket to fill at", _x, _z)
+        continue
+    _rim = road_all.intersection(_g.buffer(4.0)).difference(_g.buffer(1.0))
+    _bx0, _bz0, _bx1, _bz1 = _g.buffer(5.0).bounds
+    _i0, _j0, _i1, _j1 = int(_bx0 - X0), int(_bz0 - Z0), int(_bx1 - X0) + 1, int(_bz1 - Z0) + 1
+    _gx, _gz = np.meshgrid(np.arange(_i0, _i1) + X0, np.arange(_j0, _j1) + Z0)
+    _in = shapely.contains_xy(_g.buffer(1.2).difference(bld_union), _gx, _gz)
+    _on = shapely.contains_xy(_rim, _gx, _gz)
+    _sub = H1[_j0:_j1, _i0:_i1]
+    if not _on.any() or not _in.any():
+        print("  no asphalt round the pocket at", _x, _z)
+        continue
+    _d = np.hypot(_gx[_in][:, None] - _gx[_on][None, :], _gz[_in][:, None] - _gz[_on][None, :])
+    _wt = 1.0 / np.maximum(_d, 0.5) ** 4
+    _new = (_wt * _sub[_on][None, :]).sum(1) / _wt.sum(1)
+    _old = _sub[_in].copy()
+    _sub[_in] = np.maximum(_old, _new)
+    print("  pocket at %.0f, %.0f lifted to the asphalt round it: %d m2, by up to %.2f m" % (_x, _z, int(_in.sum()), float((_sub[_in] - _old).max())))
+
+
 # ---------------------------------------------------------------- the paved surfaces, laid
 # The ground is final now, and the asphalt and the sidewalks are laid on it here, once: every corner of every
 # triangle is given its height, and the game draws and drives on exactly that. Paved ground that no road has
@@ -2215,6 +2793,77 @@ if _low.any():
     del _dry, _wd, _hd
 print("  paving brought up out of the water:", int(_low.sum()), "m2")
 del _low
+# Jolts along the roads: the road check counted 851 places where the slope of the asphalt along the middle of a
+# road changes by more than 4 % within two metres (most on the narrow roads, which are graded least). The
+# height along each road, as the paving will take it (at every 2.5 m), is eased where it bends sharply, and the
+# ground under the road moved by the difference, fading out over 2.5 m beside it. Never by more than 0.3 m, not
+# at the ends of a road (where it meets another), not near a bridge (done next) and not at the water.
+def _lat(x, z, step=2.5):
+    x, z = np.asarray(x, np.float64), np.asarray(z, np.float64)
+    lx, lz = np.floor(x / step) * step, np.floor(z / step) * step
+    tx, tz = (x - lx) / step, (z - lz) / step
+    def _h(px, pz):
+        fx, fz = np.clip(px - X0, 0, FW - 1.001), np.clip(pz - Z0, 0, FH - 1.001)
+        ix, iz = fx.astype(int), fz.astype(int)
+        ax, az = fx - ix, fz - iz
+        return H1[iz, ix] * (1 - ax) * (1 - az) + H1[iz, ix + 1] * ax * (1 - az) + H1[iz + 1, ix] * (1 - ax) * az + H1[iz + 1, ix + 1] * ax * az
+    return (_h(lx, lz) * (1 - tx) * (1 - tz) + _h(lx + step, lz) * tx * (1 - tz)
+            + _h(lx, lz + step) * (1 - tx) * tz + _h(lx + step, lz + step) * tx * tz)
+for _round in range(3):
+    _sum, _cnt, _amp = np.zeros(H1.shape, np.float32), np.zeros(H1.shape, np.float32), np.zeros(H1.shape, np.float32)
+    _was_j = _now_j = 0
+    _dn = _deck_area.buffer(8.0) if road_decks else None
+    for w in road_ways:
+        if w[0] != 0 or not w[6] or len(w[5]) < 2 or id(w[5]) in pedestrian_ids:
+            continue
+        st = np.asarray(stations(w[5], 2.0))
+        if len(st) < 5:
+            continue
+        y = _lat(st[:, 0], st[:, 1])
+        y0 = y.copy()
+        fixed = (y < 0.9) | (st[:, 0] < X0 + 12) | (st[:, 0] > X1 - 12) | (st[:, 1] < Z0 + 12) | (st[:, 1] > Z1 - 12)
+        if _dn is not None:
+            fixed |= shapely.contains_xy(_dn, st[:, 0], st[:, 1])
+        fixed[0] = fixed[-1] = True
+        _was_j += int(((np.abs(y[:-2] - 2 * y[1:-1] + y[2:]) > 0.08) & ~fixed[1:-1]).sum())
+        for _it in range(40):
+            d2 = y[:-2] - 2 * y[1:-1] + y[2:]
+            mv = (np.abs(d2) > 0.03) & ~fixed[1:-1]
+            if not mv.any():
+                break
+            y[1:-1] += np.where(mv, 0.25 * d2, 0.0)
+            y = np.clip(y, y0 - 0.3, y0 + 0.3)
+        _now_j += int(((np.abs(y[:-2] - 2 * y[1:-1] + y[2:]) > 0.08) & ~fixed[1:-1]).sum())
+        dl = y - y0
+        R = w[1] + 2.5
+        for k in np.nonzero(np.abs(dl) > 0.005)[0]:
+            # (also its neighbours, so that the change fades along the road as well)
+            cx, cz = st[k]
+            i0, i1 = max(int(cx - X0 - R), 0), min(int(cx - X0 + R) + 2, FW)
+            j0, j1 = max(int(cz - Z0 - R), 0), min(int(cz - Z0 + R) + 2, FH)
+            if i1 <= i0 or j1 <= j0:
+                continue
+            gx, gz = np.meshgrid(np.arange(i0, i1) + X0, np.arange(j0, j1) + Z0)
+            dd = np.hypot(gx - cx, gz - cz)
+            wt = (np.exp(-(dd / 1.7) ** 2) * (dd < R)).astype(np.float32)      # (each point takes after the stations nearest it)
+            _sum[j0:j1, i0:i1] += wt * dl[k]
+            _cnt[j0:j1, i0:i1] += wt
+            _amp[j0:j1, i0:i1] = np.maximum(_amp[j0:j1, i0:i1], np.clip((R - dd) / 2.5, 0.0, 1.0))
+        for k in np.nonzero(np.abs(dl) <= 0.005)[0]:
+            cx, cz = st[k]
+            i0, i1 = max(int(cx - X0 - R), 0), min(int(cx - X0 + R) + 2, FW)
+            j0, j1 = max(int(cz - Z0 - R), 0), min(int(cz - Z0 + R) + 2, FH)
+            if i1 <= i0 or j1 <= j0:
+                continue
+            if not _cnt[j0:j1, i0:i1].any() and not (np.abs(dl[max(k - 3, 0):k + 4]) > 0.005).any():
+                continue
+            gx, gz = np.meshgrid(np.arange(i0, i1) + X0, np.arange(j0, j1) + Z0)
+            dd = np.hypot(gx - cx, gz - cz)
+            _cnt[j0:j1, i0:i1] += (np.exp(-(dd / 1.7) ** 2) * (dd < R)).astype(np.float32)
+    _mv = np.where((_cnt > 1e-4) & (H1 >= 0.9), _sum / np.maximum(_cnt, 1e-6) * _amp, 0.0)
+    H1 = (H1 + _mv).astype(np.float32)
+    print("  jolts along the middle of roads eased (round %d): %d before, %d as planned; ground moved at %d points, by up to %.2f m" % (_round + 1, _was_j, _now_j, int((np.abs(_mv) > 0.005).sum()), float(np.abs(_mv).max())))
+    del _sum, _cnt, _mv, _amp
 # Where a road goes onto a bridge, and off it: the road must meet the end of the deck at the deck's own height,
 # over its whole width. It did not: the paving takes its height from the ground at every 2.5 m, and the nearest
 # such point in under the deck lay in the river's channel, so the last metre of road before every bridge sagged
@@ -2464,6 +3113,8 @@ print("  paved cells:", len(paved), "asphalt triangles:", sum(len(d.get("A", [])
 # so that a change to the road building can be judged by numbers: holes in the asphalt under where cars drive,
 # sidewalk lying in the carriageway, asphalt on steep ground, and jolts along the middle of the road.
 _chk = {"hole": [], "walk": [], "steep": [], "jolt": []}
+_gravel_u = unary_union(_gravel_marks).buffer(1.0) if _gravel_marks else None
+_isle_u = unary_union(_nv_isles).buffer(0.3) if _nv_isles else None      # an island in the middle of a road is meant to be there
 _cover = road_laid.union(_deck_area) if road_decks else road_laid
 shapely.prepare(_cover); shapely.prepare(side); shapely.prepare(bld_union)
 _n_pts = 0
@@ -2481,9 +3132,14 @@ for w in road_ways:
         ok = (P[:, 0] > X0 + 12) & (P[:, 0] < X1 - 12) & (P[:, 1] > Z0 + 12) & (P[:, 1] < Z1 - 12)
         ok &= heights(P[:, 0], P[:, 1]) > 0.6
         ok &= ~shapely.contains_xy(bld_union, P[:, 0], P[:, 1])
+        if _gravel_u is not None:
+            ok &= ~shapely.contains_xy(_gravel_u, P[:, 0], P[:, 1])      # a gravel road has no asphalt and wants none
         _n_pts += int(ok.sum())
         miss = ok & ~shapely.contains_xy(_cover, P[:, 0], P[:, 1])
-        _chk["walk"] += [[round(float(x), 1), round(float(z), 1)] for x, z in P[miss & shapely.contains_xy(side, P[:, 0], P[:, 1])]]
+        _onw = miss & shapely.contains_xy(side, P[:, 0], P[:, 1])
+        if _isle_u is not None:
+            _onw &= ~shapely.contains_xy(_isle_u, P[:, 0], P[:, 1])
+        _chk["walk"] += [[round(float(x), 1), round(float(z), 1)] for x, z in P[_onw]]
         _chk["hole"] += [[round(float(x), 1), round(float(z), 1)] for x, z in P[miss & ~shapely.contains_xy(side, P[:, 0], P[:, 1])]]
     y = laid(st[:, 0], st[:, 1])
     d2 = np.abs(y[:-2] - 2 * y[1:-1] + y[2:])
@@ -2506,6 +3162,7 @@ del _chk, _cover
 
 # The ground as the game loads it: the 1 m grid in strips of 1000 columns (16-bit, 2 cm steps), which
 # it reads piece by piece around the player, and every tenth point of it for the far view.
+fill_pits("at the end")
 os.makedirs(os.path.join(OUT, "h1"), exist_ok=True)
 _q = np.clip(np.round((H1 - H_OFFSET) / H_SCALE), 0, 65535).astype("<u2")
 for k in range((FW + STRIP - 1) // STRIP):
@@ -2725,6 +3382,9 @@ WALLS = {
     MAIN_STREET: [(228, 214, 176), (232, 228, 218), (216, 142, 98), (222, 180, 104), (192, 202, 182), (204, 204, 198),
                   (226, 196, 150), (236, 224, 190)],
 }
+# roofs of the large buildings as the satellite sees them (tools/roof_colours.py)
+sat_roofs = json.load(open(os.path.join(DATA, "colours_roofs.json"))) if os.path.exists(os.path.join(DATA, "colours_roofs.json")) else {}
+n_sat = [0]
 ROOF_TILE = [(58, 58, 61), (58, 58, 61), (58, 58, 61), (42, 42, 44), (124, 62, 46), (124, 62, 46), (86, 92, 82)]
 ROOF_SHEET = [(122, 126, 131), (62, 64, 68), (62, 64, 68), (150, 150, 148), (96, 62, 52)]
 ROOF_FLAT = [(72, 72, 74), (92, 90, 86), (62, 64, 67)]
@@ -3006,6 +3666,9 @@ for (t, pts, a, cx, cz, osm_id), (ymin, ymax) in zip(prelim, grounds):
     src = "osm" if (colour_tag(t.get("building:colour")) or MATERIAL_COLOUR.get(t.get("building:material"))) else "rule"
     pitch, share = roof_shape(roof, a)
     roof_col = colour_tag(t.get("roof:colour")) or r.choice(ROOF_FLAT if share < 0.3 else ROOF_SHEET if style in SHEET_ROOFED else ROOF_TILE)
+    if str(osm_id) in sat_roofs and not colour_tag(t.get("roof:colour")):
+        roof_col = tuple(sat_roofs[str(osm_id)])
+        n_sat[0] += 1
     if style == OLD_TIMBER:
         roof_col = r.choice([(70, 92, 48), (84, 96, 52), (62, 80, 44)])       # turf
     fronts = []
@@ -3052,7 +3715,7 @@ for (t, pts, a, cx, cz, osm_id), (ymin, ymax) in zip(prelim, grounds):
     # [small, eave height above the uphill ground, lowest and highest ground at the walls, style, outline, roof,
     #  wall colour, roof colour]
     buildings.append([small, round(h, 1), round(ymin, 2), round(ymax, 2), style, flat,
-                      {"f": roof["f"], "w": walls, "s": roof["s"], "top": roof["top"], "sf": fronts}, list(wall), list(roof_col), name, osm_id])
+                      {"f": roof["f"], "w": walls, "s": roof["s"], "top": roof["top"], "sf": fronts, "d": roof.get("d", [])}, list(wall), list(roof_col), name, osm_id])
     centres.append((cx, cz))
     colour_from.append(src)
 
@@ -3088,10 +3751,12 @@ if homes:
             if d < 30:
                 b[7], b[8] = buildings[homes[j]][7], buildings[homes[j]][8]
 json.dump(buildings, open(os.path.join(OUT, "buildings.json"), "w"), separators=(",", ":"))
+print("  dormers the laser shows on plain roofs:", sum(len(b[6].get("d", [])) for b in buildings), "on", sum(1 for b in buildings if b[6].get("d")), "buildings")
 print("  roofs replaced by a plain one:", sum(1 for r in roof_cache.values() if r and r.get("simple")))
 print("  large buildings the laser did not see, given a usual height:", n_unseen[0])
 print("  measured from laser data:", measured, "flat/pitched/hipped or more:", roof_stats)
 print("  buildings:", len(buildings), "with a wall colour from photos:", n_real[0], "with a roof colour from photos:", n_real[1])
+print("  roofs of large buildings coloured from the satellite:", n_sat[0])
 print("  wall colours: from photos %d, from the map's own tags %d, set by hand %d, from read neighbours %d, by rule %d" % tuple(
     sum(1 for sc in colour_from if sc == k) for k in ("photo", "osm", "hand", "neighbour", "rule")))
 
@@ -3187,19 +3852,60 @@ shapely.prepare(side)
 bld_near = bld_union.buffer(1.0)
 shapely.prepare(bld_near)
 _lamps = []
+
+
+class Near:
+    """Points, and whether one of them is close to a place."""
+
+    def __init__(self, cell=10.0):
+        self.c, self.g = cell, {}
+
+    def add(self, x, z):
+        self.g.setdefault((int(x // self.c), int(z // self.c)), []).append((x, z))
+
+    def nearest(self, x, z, r):
+        k, cx, cz = int(r // self.c) + 1, int(x // self.c), int(z // self.c)
+        best = None
+        for i in range(cx - k, cx + k + 1):
+            for j in range(cz - k, cz + k + 1):
+                for a, b in self.g.get((i, j), ()):
+                    d = math.hypot(x - a, z - b)
+                    if d < r and (best is None or d < best[0]):
+                        best = (d, a, b)
+        return best
+
+
+_lamp_near, _sig_near, _stop_near = Near(), Near(), Near()
+_nv_lamp = {}             # sign post of the road database -> the lamp post it hangs on, where that stands
+
+
+def _lamp(x, z, pid=None):
+    """A lamp post that is known to stand at a place. Says whether it was put up (not if it is there already)."""
+    x, z, to_road, d = beside_road(x, z)
+    was = _lamp_near.nearest(x, z, 6.0)
+    if was is not None:                                    # the same post, known from two sides
+        if pid is not None:
+            _nv_lamp[pid] = (was[1], was[2])
+        return 0
+    n0 = len(props)
+    put(LAMP, x, z, yaw_of(*to_road))
+    if len(props) == n0:
+        return 0
+    _lamps.append((x, z))
+    _lamp_near.add(x, z)
+    if pid is not None:
+        _nv_lamp[pid] = (x, z)
+    return 1
+
+
 for t, x, z in osm_nodes:
     hwn = t.get("highway")
     if hwn == "street_lamp":
-        x, z, to_road, d = beside_road(x, z)
-        put(LAMP, x, z, yaw_of(*to_road))
-        _lamps.append((x, z))
-    elif hwn == "bus_stop":
-        x, z, to_road, d = beside_road(x, z, 2.4)
-        if d < 40:
-            put(SHELTER if t.get("shelter") != "no" else BUS_SIGN, x, z, yaw_of(*to_road))
+        _lamp(x, z)
     elif hwn == "traffic_signals":
         x, z, to_road, d = beside_road(x, z)
         put(SIGNAL, x, z, yaw_of(*to_road))
+        _sig_near.add(x, z)
     elif t.get("amenity") == "bench":
         x, z, to_road, d = beside_road(x, z)
         put(BENCH, x, z, yaw_of(*to_road) if d < 25 else prng.uniform(0, 6.28))
@@ -3210,7 +3916,7 @@ for t, x, z in osm_nodes:
         put(POST_BOX, x, z, yaw_of(*to_road))
     elif t.get("leisure") == "picnic_table":
         put(PICNIC, x, z, prng.uniform(0, 3.14))
-for kind, pts in barriers:
+for kind, pts in list(barriers) + list(overrides.WALLS):
     run({"fence": FENCE, "hedge": HEDGE, "wall": WALL, "retaining_wall": RETAINING, "guard_rail": GUARD_RAIL}[kind], pts)
 for pts in playgrounds:
     poly = SPoly(pts)
@@ -3226,12 +3932,64 @@ for pts in power_lines:
 for pts in _sunk_walls:
     run(WALL, pts)
 
+# What the national road database knows stands along the roads: the lamp posts of the state's and the county's
+# roads, the lamp posts its signs hang on (on the town's streets too), bus shelters and signal posts.
+_n_osm_lamps = len(_lamps)
+_nv_lights = [r for r in nvdb.inside(nvdb.load(87), 8) if r["p"].get("Plassering") == "Lysmast" and "unnel" not in str(r["p"].get("Bruksområde"))]
+n_nl = sum(_lamp(r["x"], r["z"]) for r in _nv_lights)
+n_nl2 = sum(_lamp(r["x"], r["z"], r["id"]) for r in nvdb.inside(nvdb.load(95), 8) if r["p"].get("Oppsettingsutstyr") == "Lysmast")
+# A bus stop has a shelter where the database has one near it or the map says so outright (before, every stop
+# the map said nothing about got one: 145 shelters where 73 stand).
+_stops = [(t, x, z) for t, x, z in osm_nodes if t.get("highway") == "bus_stop"]
+_nv_sh = nvdb.inside(nvdb.load(25), 8)
+_sh_for, _sh_free = {}, []
+if _stops:
+    _stt = cKDTree([(x, z) for t, x, z in _stops])
+    for r in _nv_sh:
+        d, i = _stt.query((r["x"], r["z"]))
+        i = int(i)
+        if d < 30.0 and (i not in _sh_for or d < _sh_for[i][0]):
+            if i in _sh_for:
+                _sh_free.append(_sh_for[i][1])
+            _sh_for[i] = (d, r)
+        else:
+            _sh_free.append(r)
+n_sh = n_bs = 0
+for i, (t, x, z) in enumerate(_stops):
+    if i in _sh_for:
+        kind, x, z = SHELTER, _sh_for[i][1]["x"], _sh_for[i][1]["z"]
+    else:
+        kind = SHELTER if t.get("shelter") == "yes" or (not _nv_sh and t.get("shelter") != "no") else BUS_SIGN
+    x, z, to_road, d = beside_road(x, z, 2.4)
+    if d < 40:
+        put(kind, x, z, yaw_of(*to_road))
+        _stop_near.add(x, z)
+        n_sh += kind == SHELTER
+        n_bs += kind == BUS_SIGN
+for r in _sh_free:
+    x, z, to_road, d = beside_road(r["x"], r["z"], 2.4)
+    if d < 40 and _stop_near.nearest(x, z, 8.0) is None:
+        put(SHELTER, x, z, yaw_of(*to_road))
+        _stop_near.add(x, z)
+        n_sh += 1
+n_sig = 0
+for r in nvdb.inside(nvdb.load(90), 8):
+    if r["p"].get("Oppsettingsutstyr") in ("Egen stolpe", None) and _sig_near.nearest(r["x"], r["z"], 8.0) is None:
+        x, z, to_road, d = beside_road(r["x"], r["z"])
+        if d < 40:
+            put(SIGNAL, x, z, yaw_of(*to_road))
+            _sig_near.add(x, z)
+            n_sig += 1
+print("  lamp posts: from the map %d, from the road database %d, that its signs hang on %d; bus stops with a shelter %d, with a sign only %d; signal posts added %d" % (_n_osm_lamps, n_nl, n_nl2, n_sh, n_bs, n_sig))
+
 # lamps along lit streets and the bigger roads, where the map has none
 lamp_tree = cKDTree(_lamps) if _lamps else None
 for pts, t in way_tags:
     hw = t["highway"]
     if not (t.get("lit") == "yes" or hw in ("trunk", "primary", "secondary", "tertiary") or (hw == "residential" and t.get("lit") != "no")):
         continue
+    if _nv_lights and hw in ("trunk", "primary", "secondary") and t.get("lit") != "yes":
+        continue                                           # the state's and the county's roads: the database has their lamps, each where it stands
     half = ROAD_W[hw] / 2
     st = stations(pts, 3.0)
     gap = 12 if hw != "residential" else 16
@@ -3242,20 +4000,23 @@ for pts, t in way_tags:
         x, z = xa + nx * (half + 0.9), za + nz * (half + 0.9)
         if not inside(x, z, 10) or shapely.contains_xy(road_all, x, z) or shapely.contains_xy(bld_near, x, z):
             continue
-        if lamp_tree is not None and lamp_tree.query((x, z))[0] < 22:
+        if lamp_tree is not None and lamp_tree.query((x, z))[0] < 26:
             continue
         put(LAMP, x, z, yaw_of(-nx, -nz))
 
 # signs at junctions: give way (with the roundabout sign under it at a roundabout), the speed limit where it
 # changes, and the names of the streets where two named streets meet
+# (With the road database there, the signs are the ones it has, each where it stands: see "road signs" below. Then
+# only the names of the streets are put up by rule here.)
 name_signs = []
 _named = set()
+_nv_plates = nvdb.inside(nvdb.load(96), 8)
 for end, (dx, dz), half, back, tg, duty, oneway, key in approaches:
     x, z = end[0] - dx * (back + 1.5) - dz * (half + 0.8), end[1] - dz * (back + 1.5) + dx * (half + 0.8)      # right-hand side
-    if duty and not shapely.contains_xy(bld_near, x, z):
+    if duty and not _nv_plates and not shapely.contains_xy(bld_near, x, z):
         put(GIVE_WAY_ROUND if duty == 2 else GIVE_WAY, x, z, yaw_of(-dx, -dz))
     speed = tg.get("maxspeed", "")
-    if speed.isdigit() and not oneway and len(_speeds_at.get(key, ())) > 1:
+    if speed.isdigit() and not _nv_plates and not oneway and len(_speeds_at.get(key, ())) > 1:
         x2, z2 = end[0] - dx * (back + 9) + dz * (half + 0.8), end[1] - dz * (back + 9) - dx * (half + 0.8)
         if not shapely.contains_xy(bld_near, x2, z2):
             put(ROUND_SIGN, x2, z2, yaw_of(dx, dz), 1.0, float(speed))
@@ -3269,7 +4030,7 @@ for end, (dx, dz), half, back, tg, duty, oneway, key in approaches:
             name_signs.append([round(x3, 2), round(height_at(x3, z3), 2), round(z3, 2), round(yaw_of(dx, dz), 3), own, sorted(names - {own})[0]])
 # a blue sign at both ends of every zebra crossing
 for w in road_ways:
-    if w[0] == 2 and len(w[5]) >= 2:
+    if w[0] == 2 and len(w[5]) >= 2 and not _nv_plates:
         (xa, za), (xb, zb) = w[5][0], w[5][-1]
         ln = math.hypot(xb - xa, zb - za)
         if ln > 3.0:
@@ -3630,11 +4391,196 @@ props = [tuple(pr[:7]) + (0.0,) if int(pr[0]) in _linear or int(pr[0]) == WIRES 
 print("  double railings and fences removed:", n_double)
 _z = _zone_of(0.4)[0]
 name_signs = [q for q in name_signs if not shapely.contains_xy(_z, q[0], q[2])]
-for _sx, _sz in overrides.NAME_SIGN_SWAP:                  # a sign whose two plates hang the wrong way round
+for _swx, _swz in overrides.NAME_SIGN_SWAP:                # a sign whose two plates hang the wrong way round
     for q in name_signs:
-        if math.hypot(q[0] - _sx, q[2] - _sz) < 2.0:
+        if math.hypot(q[0] - _swx, q[2] - _swz) < 2.0:
             q[4], q[5] = q[5], q[4]
 print("  on the carriageway: moved", n_moved, "dropped", n_dropped)
+
+# ---------------------------------------------------------------- road signs, raised crossings and speed bumps
+# The signs of the national road database (tools/nvdb.py), each where it stands: the plates of a post, turned to
+# the traffic they are for, stacked on it as they hang (the sign over its plates of text). The database says which
+# way a plate faces by the way the metres of its road run; which way that is on the ground is read from the posts
+# next along the same road, or else from the side of the road the post is said to stand on.
+signs = []            # [x, z, height of the pole (0: hangs on a lamp post), [[square, yaw, height of its middle, width, height, text, ink, letter size, text offset], ...]]
+humps = []            # [x, z, way the traffic runs (x, z), half width across the road, half length of the flat top, length of each ramp, height, kind (0 round, 1 flat-topped)]
+if _nv_plates:
+    import bisect
+    import collections
+    _posts = {r["id"]: r for r in nvdb.inside(nvdb.load(95), 8)}
+    _by = {}
+    for r in _nv_plates:
+        _by.setdefault(r["of"] if r.get("of") in _posts else ("at", round(r["x"], 1), round(r["z"], 1)), []).append(r)
+    _run = {}
+    for r in nvdb.load(95):
+        if r.get("ref") and "m" in r:
+            _run.setdefault(r["ref"], []).append((r["m"], r["x"], r["z"]))
+    for v in _run.values():
+        v.sort()
+
+    def _metres_run(ref, m, x, z):
+        """The way the metres of a road run at a place (a vector, not of unit length), or None."""
+        v = _run.get(ref)
+        if not v or m is None:
+            return None
+        i = bisect.bisect_left(v, (m,))
+        ahead = next(((a, b) for mm, a, b in v[i:i + 60] if 8.0 < mm - m < 250.0 and math.hypot(a - x, b - z) > 6.0), None)
+        behind = next(((a, b) for mm, a, b in reversed(v[max(0, i - 60):i]) if 8.0 < m - mm < 250.0 and math.hypot(a - x, b - z) > 6.0), None)
+        if ahead and behind:
+            return (ahead[0] - behind[0], ahead[1] - behind[1])
+        if ahead:
+            return (ahead[0] - x, ahead[1] - z)
+        if behind:
+            return (x - behind[0], z - behind[1])
+        return None
+
+    _zs, _rim = _zone_of(0.35)
+    _drawn, _left_out = collections.Counter(), collections.Counter()
+    n_wall = n_road = n_off = n_both = n_agree = n_noway = 0
+    for key, plates in _by.items():
+        post = _posts.get(key) if not isinstance(key, tuple) else None
+        src = post or plates[0]
+        x, z, side_ = src["x"], src["z"], src.get("side", "")
+        mount = (post or {}).get("p", {}).get("Oppsettingsutstyr", "")
+        if mount == "Vegg":
+            n_wall += 1
+            continue
+        lamp = _nv_lamp.get(key)
+        if lamp:
+            x, z = lamp
+        elif shapely.contains_xy(_zs, x, z) and not (side_ == "M" and shapely.contains_xy(side, x, z)):      # (in the middle of the road: on a traffic island)
+            q = shapely.ops.nearest_points(_rim, shapely.Point(x, z))[0]
+            if math.hypot(q.x - x, q.y - z) > 5.0 or side_ == "M":
+                n_road += 1
+                continue
+            x, z = q.x, q.y
+        dq, j = station_tree.query((x, z))
+        if not inside(x, z, 8) or height_at(x, z) <= 0.6 or shapely.contains_xy(bld_union, x, z) or dq > 30.0:
+            n_off += 1
+            continue
+        j = int(j)
+        (rx, rz), (dx, dz) = _sx[j], _sd[j]
+        right = -(x - rx) * dz + (z - rz) * dx >= 0                 # the post stands to the right of the way the road is drawn
+        ln = math.hypot(rx - x, rz - z)
+        to_road = ((rx - x) / ln, (rz - z) / ln) if ln > 0.3 else (dz, -dx)
+        vec = _metres_run(src.get("ref"), src.get("m"), src["x"], src["z"])
+        met = None
+        if vec is not None:
+            c = (vec[0] * dx + vec[1] * dz) / (math.hypot(*vec) or 1.0)
+            met = (1 if c > 0 else -1) if abs(c) > 0.35 else None
+        met_side = (1 if right == (side_ == "H") else -1) if side_ in ("H", "V") else None
+        if met is not None and met_side is not None:
+            n_both += 1
+            n_agree += met == met_side
+        met = met if met is not None else met_side
+        n_noway += met is None
+        groups = {}
+        for r in plates:
+            num = r["p"].get("Skiltnummer", "").split(" - ")[0].strip()
+            if num.startswith("729") or (num == "512" and _stop_near.nearest(x, z, 15.0) is not None):
+                continue                                   # street names and bus stops have their signs already
+            fc = sign_faces.face_of(num, r["p"].get("Tekst") or "")
+            if fc is None:
+                _left_out[num.split(".")[0]] += 1
+                continue
+            _drawn[num.split(".")[0]] += 1
+            sc = {"Middels størrelse": 1.3, "Understørrelse": 0.7}.get(r["p"].get("Størrelse"), 1.0) if not fc[3] and num[0] != "7" else 1.0
+            way = r["p"].get("Ansiktsside, rettet mot")
+            if way == "Trafikk i metreringsretning" and met is not None:
+                faces = [-met]
+            elif way == "Trafikk mot metreringsretning" and met is not None:
+                faces = [met]
+            elif way == "Tosidig":
+                faces = [1, -1]
+            elif way == "Parallelt mot veg":
+                faces = ["in"]
+            elif way == "Parallelt fra veg":
+                faces = ["out"]
+            else:
+                faces = [-1 if right else 1]               # to the traffic that has it on its right
+            for fq in faces:
+                g = groups.setdefault(fq, [])
+                if not any(q[1][0] == fc[0] and q[1][3] == fc[3] for q in g) and len(g) < 4:
+                    g.append((num, fc, sc))
+        pole, out = 0.0, []
+        for fq, lst in groups.items():
+            # the sign over the plates that say more about it, and over the striped marker (906), which hangs under
+            # a keep-right sign and reaches down to knee height: so the road photos show it (FV662 m05169, 2025;
+            # note of 20 Nov: it stood on top of the sign)
+            lst.sort(key=lambda q: (q[0][0] == "8") + 2 * (q[0][0] == "9"))
+            low = 0.9 if all(q[0][0] == "9" for q in lst) else (0.35 if any(q[0][:3] == "906" for q in lst) else (1.5 if any(q[0][:3] in ("701", "703") for q in lst) else 2.1))
+            y = low + sum(q[1][2] * q[2] for q in lst) + 0.03 * (len(lst) - 1)
+            pole = max(pole, y + 0.04)
+            nx, nz = (dx * fq, dz * fq) if fq in (1, -1) else (to_road if fq == "in" else (-to_road[0], -to_road[1]))
+            for num, fc, sc in lst:
+                h = fc[2] * sc
+                out.append([fc[0], round(yaw_of(nx, nz), 3), round(y - h / 2, 2), round(fc[1] * sc, 2), round(h, 2), fc[3], fc[4], fc[5], round(fc[6], 2)])
+                y -= h + 0.03
+        if out:
+            signs.append([round(x, 2), round(z, 2), 0 if lamp else round(min(pole, 6.5), 2), out])
+    print("  road signs: %d plates on %d posts (%d on lamp posts); on walls, left out %d; in the road %d; off the map or in a building %d" % (
+        sum(len(q[3]) for q in signs), len(signs), sum(1 for q in signs if q[2] == 0), n_wall, n_road, n_off))
+    print("    which way the road's metres run: the two readings agree at %d of %d posts; no reading at %d" % (n_agree, n_both, n_noway))
+    print("    drawn:", " ".join("%s:%d" % kv for kv in _drawn.most_common(40)))
+    print("    not drawn:", " ".join("%s:%d" % kv for kv in _left_out.most_common(30)))
+    # A raised crossing: the asphalt comes up 10 cm under the stripes, with a ramp before and after. A speed bump:
+    # a round back across the road, 4 m long and 10 cm high (the database's "sirkel-30"), or flat-topped.
+    _zeb = [w for w in road_ways if w[0] == 2 and len(w[5]) >= 2]
+    _zt = shapely.STRtree([LineString(w[5]) for w in _zeb]) if _zeb else None
+    _hump_near = Near()
+    n_raised = n_raised_miss = n_bump = 0
+    for r in nvdb.inside(nvdb.load(174), 12):
+        if r["p"].get("Hevet") != "Ja" or _zt is None:
+            continue
+        hit = _zt.query_nearest(shapely.Point(r["x"], r["z"]), max_distance=8.0)
+        w = _zeb[int(hit[0])] if len(hit) else None
+        if w is None or math.hypot(w[5][-1][0] - w[5][0][0], w[5][-1][1] - w[5][0][1]) < 3.0:
+            n_raised_miss += 1
+            continue
+        (xa, za), (xb, zb) = w[5][0], w[5][-1]
+        ln = math.hypot(xb - xa, zb - za)
+        mx, mz = (xa + xb) / 2, (za + zb) / 2
+        if _hump_near.nearest(mx, mz, 6.0) is None:
+            humps.append([round(mx, 2), round(mz, 2), round(-(zb - za) / ln, 4), round((xb - xa) / ln, 4), round(ln / 2 + 0.2, 2), round(w[1] + 0.3, 2), 1.4, 0.10, 1])
+            _hump_near.add(mx, mz)
+            n_raised += 1
+    for r in nvdb.inside(nvdb.load(103), 12):
+        dq, j = station_tree.query((r["x"], r["z"]))
+        j = int(j)
+        if dq > 6.0:
+            continue
+        (rx, rz), (dx, dz) = _sx[j], _sd[j]
+        al = (r["x"] - rx) * dx + (r["z"] - rz) * dz
+        cx, cz = rx + dx * al, rz + dz * al
+        if _hump_near.nearest(cx, cz, 9.0) is not None or height_at(cx, cz) <= 0.6:
+            continue
+        ll = float(r["p"].get("Lengde, langs kjøreretning") or 4.0)
+        flat = max(ll / 2 - 1.0, 0.0) if "trapes" in str(r["p"].get("Profil")) else 0.0
+        humps.append([round(cx, 2), round(cz, 2), round(dx, 4), round(dz, 4), round(_sh[j], 2), round(flat, 2), round(ll / 2 - flat, 2), 0.10, 0])
+        _hump_near.add(cx, cz)
+        n_bump += 1
+    print("  raised crossings: %d (no crossing drawn there: %d); speed bumps: %d" % (n_raised, n_raised_miss, n_bump))
+json.dump(signs, open(os.path.join(OUT, "signs.json"), "w"), ensure_ascii=False, separators=(",", ":"))
+_sign_cols, _sign_rows = sign_faces.write(os.path.join(OUT, "textures", "signs.png"))
+# What stands where it cannot stand (the map plan of 19 Nov, H): a parked car, a post box or a sign inside the
+# walls of a building, and a lamp post in the island of a roundabout (two stood in the rose bed at
+# Fannestrandvegen).
+_isles_r = []
+if round_lines:
+    for ring in polygonize(unary_union([LineString(pts) for pts, _h in round_lines])):
+        half = max(h for pts, h in round_lines if ring.buffer(0.5).intersects(LineString(pts)))
+        island = ring.buffer(-(half + 0.2))
+        if not island.is_empty:
+            _isles_r.append(island)
+_isles_r = unary_union(_isles_r) if _isles_r else None
+_pa = np.asarray(props, np.float32)
+_pt = ~np.isin(_pa[:, 0].astype(int), [4, 5, 6, 7, 18, 19, 20]) & ~np.isin(_pa[:, 0].astype(int), [21, 22, 23, 28])     # not fences and such, nor boats, ferries, aircraft
+_gone = _pt & shapely.contains_xy(bld_union.buffer(-0.2), _pa[:, 1].astype(float), _pa[:, 3].astype(float))
+_n_in = int(_gone.sum())
+if _isles_r is not None:
+    _gone |= (_pa[:, 0].astype(int) == 0) & shapely.contains_xy(_isles_r, _pa[:, 1].astype(float), _pa[:, 3].astype(float))
+print("  things standing inside a building, removed:", _n_in, " lamp posts in the island of a roundabout, removed:", int(_gone.sum()) - _n_in)
+props = [q for q, g in zip(props, _gone) if not g]
 np.asarray(props, np.float32).tofile(os.path.join(OUT, "props.bin"))
 print("  boats:", n_boats, "ferries:", len(_quays))
 print("  props:", len(props), "cars:", n_cars, "garden panels:", n_garden)
@@ -3659,7 +4605,8 @@ for pts in canopy_ways:
         e0, e1 = e1, e0
     canopies.append({"c": [round(float(c[0]), 2), round(float(c[1]), 2)], "u": [round(float(e0[0] / np.hypot(*e0)), 4), round(float(e0[1] / np.hypot(*e0)), 4)],
                      "hl": round(float(np.hypot(*e0)) / 2, 2), "hw": round(float(np.hypot(*e1)) / 2, 2),
-                     "ground": round(height_at(float(c[0]), float(c[1])), 2), "h": 5.4})
+                     "ground": round(height_at(float(c[0]), float(c[1])), 2), "h": 5.4,
+                     "turn": any(math.hypot(c[0] - x_, c[1] - z_) < 12.0 for x_, z_ in overrides.CANOPY_TURNED)})      # (the pumps in rows along the roof)
 
 # Tunnel mouths: not the joints between two stretches of the same tunnel, and not out in the sea.
 _seen = {}
@@ -3767,6 +4714,23 @@ for q in overrides.SITES:
         hit = LineString([a_, b_]).interpolate(LineString([a_, b_]).project(shapely.Point(q["at"])))
         c_ = np.array([hit.x, hit.y]) + np.array(n_) * q.get("out", 13.0)
         sites.setdefault(kind, []).append({"at": [round(float(c_[0]), 2), round(height_at(float(c_[0]), float(c_[1])), 2), round(float(c_[1]), 2)], "along": [round(t_[0], 3), round(t_[1], 3)], "name": q["name"]})
+    elif kind == "pumps":
+        cx, cz = q["at"]
+        sites.setdefault(kind, []).append({"at": [cx, round(height_at(cx, cz), 2), cz], "along": list(q["along"]), "name": q["name"], "count": q.get("count", 2), "across": q.get("across", False)})
+    elif kind == "glasshouse":
+        # a nursery's glasshouses: rows of small glazed gables over the whole of the building, across its shorter side
+        r_ = list(poly.minimum_rotated_rectangle.exterior.coords)[:4]
+        c_ = np.mean(r_, 0)
+        e0_, e1_ = np.subtract(r_[1], r_[0]), np.subtract(r_[2], r_[1])
+        if np.hypot(*e0_) < np.hypot(*e1_):
+            e0_, e1_ = e1_, e0_
+        _bl = [b for b in buildings if b[10] == q["osm_id"]]
+        sites.setdefault(kind, []).append({"c": [round(float(c_[0]), 2), round(float(c_[1]), 2)], "u": [round(float(e0_[0] / np.hypot(*e0_)), 4), round(float(e0_[1] / np.hypot(*e0_)), 4)],
+                                           "hl": round(float(np.hypot(*e0_)) / 2, 2), "hw": round(float(np.hypot(*e1_)) / 2, 2), "span": q["span"],
+                                           "eave": round(_bl[0][3] + _bl[0][1], 2) if _bl else round(height_at(float(c_[0]), float(c_[1])) + 3.3, 2)})
+    elif kind == "carwash":
+        cx, cz = q["at"]
+        sites.setdefault(kind, []).append({"at": [cx, round(height_at(cx, cz), 2), cz], "along": list(q["along"]), "bays": q["bays"]})
     elif kind == "construction":
         cx, cz = q["at"]
         left = min(_site_ray(cx, z_, -1, 0) for z_ in (cz - 4, cz, cz + 3))
@@ -3793,9 +4757,18 @@ for q in overrides.SITES:
                                            "side": q["side"], "tall": q["tall"], "colour": q["colour"]})
     elif kind == "wall_sign":
         a_, b_, t_, n_, ln = _site_edge(poly, q["at"], q["toward"], q.get("long", False))
-        hit = LineString([a_, b_]).interpolate(LineString([a_, b_]).project(shapely.Point(q["at"])))
+        # the whole name on its own wall: where the lettering would run past the end of the wall (and in behind the
+        # next part of the building: "half the text of Glamox is hidden", 20 Nov) it is moved along, and made
+        # smaller if the wall is shorter than the name
+        tall_ = q["tall"]
+        wide_ = tall_ * (0.62 * len(q["text"]) + 0.9)
+        if wide_ > ln - 1.0:
+            tall_ = round(max(ln - 1.0, 1.0) / (0.62 * len(q["text"]) + 0.9), 2)
+            wide_ = tall_ * (0.62 * len(q["text"]) + 0.9)
+        s_ = min(max(LineString([a_, b_]).project(shapely.Point(q["at"])), wide_ / 2 + 0.5), max(ln - wide_ / 2 - 0.5, wide_ / 2 + 0.5))
+        hit = LineString([a_, b_]).interpolate(s_)
         sites.setdefault(kind, []).append({"at": [round(hit.x, 2), round(height_at(hit.x + n_[0] * 0.5, hit.y + n_[1] * 0.5), 2), round(hit.y, 2)], "out": [round(n_[0], 3), round(n_[1], 3)],
-                                           "text": q["text"], "ink": q["ink"], "back": q.get("back"), "tall": q["tall"], "up": q["up"], "door": q.get("door", False)})
+                                           "text": q["text"], "ink": q["ink"], "back": q.get("back"), "tall": tall_, "up": q["up"], "door": q.get("door", False)})
 # A raised rose bed that fills the corner it stands in: out to the walls on every side that has one within reach.
 rose_beds = []
 for q in overrides.ROSE_BEDS:
@@ -3816,8 +4789,9 @@ meta = {
     "stadium": stadium, "piers": piers, "portals": portals,
     "quays": quays, "sports": sports, "canopies": canopies, "skywalks": skywalks, "fields": fields, "golf": golf, "courts": courts, "fountains": fountains, "door_signs": door_signs, "mercedes": list(overrides.MERCEDES_AT), "bicycle": list(overrides.BICYCLE_AT), "statues": statues, "sandpits": sandpits,
     "plaza_tris": plaza_tris, "radhus_steps": radhus_steps, "rosepiken": list(overrides.ROSEPIKEN), "rose_beds": rose_beds, "sites": sites, "patches_built": _patch_lines,
+    "humps": humps, "sign_grid": [_sign_cols, _sign_rows], "slabs": slab_cells, "parked_big": [list(q) for q in getattr(overrides, "PARKED_BIG", [])],
     "doors": {k: [list(d) for d in v] for k, v in overrides.DOORS.items()},
-    "attribution": "Map data © OpenStreetMap contributors (ODbL). Terrain, building heights and roofs: © Kartverket, hoydedata.no.",
+    "attribution": "Map data © OpenStreetMap contributors (ODbL). Terrain, building heights and roofs: © Kartverket, hoydedata.no. Road signs, crossings, speed bumps, lamp posts and bus shelters: © Statens vegvesen, NVDB (NLOD).",
 }
 json.dump(meta, open(os.path.join(OUT, "meta.json"), "w"), ensure_ascii=False, separators=(",", ":"))
 print("  trees:", len(trees), "wrecks:", len(wrecks), "streets:", len(street_out), "places:", len(places), "spawn:", spawn)

@@ -16,6 +16,9 @@ var _prompt: Label
 var _compass: Compass
 var _stamina_bg: ColorRect
 var _stamina_fill: ColorRect
+var _speed: Label               # the speedometer: bottom right while driving, in km/h (asked for 20 Nov)
+var _speed_unit: Label
+var _speed_shown := 0.0
 var _tick := 0.0
 var _age := 0.0
 
@@ -87,9 +90,9 @@ func _ready() -> void:
 	add_child(_stamina_fill)
 
 	_help = _label(13, Color(1, 1, 1, 0.6))
-	_help.text = "WASD move  ·  Mouse look  ·  Shift sprint (swim faster)  ·  Space jump  ·  F get in/out of a vehicle  ·  Space in a car: drift  ·  Bicycle: hold Space and let go to jump  ·  Helicopter: mouse turns, Space up, Ctrl down, WASD lean  ·  Wheel zoom  ·  F11 fullscreen  ·  [ ] time of day  ·  V weather  ·  M mute  ·  E take a job  ·  J jobs and sights  ·  Q view from the seat  ·  Esc menu  ·  F5 start again  ·  Right mouse: leave a note"
+	_help.text = "WASD move  ·  Mouse look  ·  Shift sprint (swim faster)  ·  Space jump  ·  F get in/out of a vehicle  ·  Space in a car: drift  ·  Bicycle: hold Space and let go to jump  ·  Helicopter: mouse turns, Space up, Ctrl down, WASD lean  ·  Aeroplane: W/S throttle, look to steer, S brakes on the ground  ·  Wheel zoom  ·  F11 fullscreen  ·  [ ] time of day  ·  V weather  ·  M mute  ·  E take a job  ·  J jobs and sights  ·  Q view from the seat  ·  Esc menu  ·  F5 start again  ·  Right mouse: leave a note"
 	if OS.has_feature("web"):
-		_help.text = "WASD move  ·  Mouse look  ·  Shift sprint (swim faster)  ·  Space jump  ·  F get in/out of a vehicle  ·  Space in a car: drift  ·  Bicycle: hold Space and let go to jump  ·  Helicopter: mouse turns, Space up, C down, WASD lean  ·  Wheel zoom  ·  F11 fullscreen  ·  [ ] time of day  ·  V weather  ·  M mute  ·  E take a job  ·  J jobs and sights  ·  Q view from the seat  ·  Esc menu  ·  F5 start again"
+		_help.text = "WASD move  ·  Mouse look  ·  Shift sprint (swim faster)  ·  Space jump  ·  F get in/out of a vehicle  ·  Space in a car: drift  ·  Bicycle: hold Space and let go to jump  ·  Helicopter: mouse turns, Space up, C down, WASD lean  ·  Aeroplane: W/S throttle, look to steer, S brakes on the ground  ·  Wheel zoom  ·  F11 fullscreen  ·  [ ] time of day  ·  V weather  ·  M mute  ·  E take a job  ·  J jobs and sights  ·  Q view from the seat  ·  Esc menu  ·  F5 start again"
 
 	_intro = _label(22, Color(1, 1, 1, 1))
 	_intro.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -98,6 +101,13 @@ func _ready() -> void:
 	_prompt = _label(18, Color(1, 1, 1, 0.95))
 	_prompt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_prompt.visible = false
+
+	_speed = _label(54, Color(1, 1, 1, 0.95))
+	_speed.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_speed.visible = false
+	_speed_unit = _label(18, Color(1, 1, 1, 0.75))
+	_speed_unit.text = "km/h"
+	_speed_unit.visible = false
 
 	_under = ColorRect.new()                       # the view under water: dark green-blue
 	_under.color = Color(0.02, 0.16, 0.19, 0.72)
@@ -142,6 +152,9 @@ func _layout() -> void:
 	_intro.size = Vector2(vs.x, 80.0)
 	_prompt.position = Vector2(0.0, vs.y * 0.82)
 	_prompt.size = Vector2(vs.x, 30.0)
+	_speed.position = Vector2(vs.x - 290.0, vs.y - 138.0)
+	_speed.size = Vector2(200.0, 70.0)
+	_speed_unit.position = Vector2(vs.x - 82.0, vs.y - 100.0)
 
 
 func _process(delta: float) -> void:
@@ -155,6 +168,15 @@ func _process(delta: float) -> void:
 
 	_prompt.visible = player.near_atv() or (player.driving and _age < 60.0 and player._drive_speed == 0.0)
 	_prompt.text = "F  —  get out" if player.driving else "F  —  get in or on %s" % player.vehicle_label()
+	# how fast the vehicle is really moving (not what the engine asks for), evened out so the figures can be read
+	_speed.visible = player.driving
+	_speed_unit.visible = player.driving
+	if player.driving:
+		var now: float = (player.velocity as Vector3).length() * 3.6
+		_speed_shown = lerpf(_speed_shown, now, minf(1.0, 8.0 * delta))
+		_speed.text = str(int(round(_speed_shown)))
+	else:
+		_speed_shown = 0.0
 	_compass.bearing = player.bearing()
 	_compass.queue_redraw()
 	var st: float = player.stamina

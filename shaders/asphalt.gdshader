@@ -7,6 +7,7 @@ shader_type spatial;
 // carriageway, a path, the shoulder).
 uniform sampler2D albedo_tex : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D normal_tex : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2D rough_tex : filter_linear_mipmap_anisotropic, repeat_enable;
 uniform sampler2D noise_tex : filter_linear_mipmap, repeat_enable;
 global uniform float snow;
 global uniform float wetness;
@@ -23,8 +24,12 @@ void vertex() {
 
 void fragment() {
 	vec2 uv = wpos.xz * 0.5;
-	vec3 col = texture(albedo_tex, uv).rgb * pow(COLOR.rgb, vec3(2.2));
 	float big = texture(noise_tex, wpos.xz * 0.009).r;
+	// The asphalt is a photograph (tools/fetch_textures.py), 2 m to the tile. It is laid a second time, larger and
+	// turned, and the two are mixed by a slow noise: down a long street no tile is seen to repeat.
+	vec2 uv2 = vec2(wpos.x * 0.8 + wpos.z * 0.6, wpos.z * 0.8 - wpos.x * 0.6) * 0.31 + 0.43;
+	float which = smoothstep(0.38, 0.62, texture(noise_tex, wpos.xz * 0.027 + 0.71).r);
+	vec3 col = mix(texture(albedo_tex, uv).rgb, texture(albedo_tex, uv2).rgb, which) * pow(COLOR.rgb, vec3(2.2));
 	float mid = texture(noise_tex, wpos.xz * 0.061 + 0.37).r;
 	float fine = texture(noise_tex, wpos.xz * 0.43).r;
 	// worn and fresh stretches
@@ -45,9 +50,10 @@ void fragment() {
 	// winter: ploughed and gritted, grey slush in drifts and trodden snow where the noise is high
 	col = mix(col, vec3(0.62, 0.65, 0.69), snow * (0.16 + 0.55 * smoothstep(0.42, 0.70, mid * 0.6 + big * 0.4)));
 	ALBEDO = col;
-	ROUGHNESS = mix(mix(0.92, 0.8, patch), 0.36, wetness);
+	float grain = mix(texture(rough_tex, uv).r, texture(rough_tex, uv2).r, which) / 0.92;
+	ROUGHNESS = mix(clamp(mix(0.92, 0.8, patch) * grain, 0.0, 1.0), 0.36, wetness);
 	TANGENT = normalize((VIEW_MATRIX * vec4(1.0, 0.0, 0.0, 0.0)).xyz);
 	BINORMAL = normalize((VIEW_MATRIX * vec4(0.0, 0.0, 1.0, 0.0)).xyz);
-	NORMAL_MAP = texture(normal_tex, uv).rgb;
-	NORMAL_MAP_DEPTH = mix(1.0, 0.5, patch);
+	NORMAL_MAP = mix(texture(normal_tex, uv).rgb, texture(normal_tex, uv2).rgb, which);
+	NORMAL_MAP_DEPTH = mix(1.6, 0.8, patch);
 }

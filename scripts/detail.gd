@@ -35,6 +35,10 @@ var _queue: Array = []
 var _tri_index := {}           # cell -> {2.5 m square -> offsets of the asphalt triangles in it}
 var budget_usec := BUDGET_USEC
 var sweep := false            # the road sweep (main.gd --sweep): no buildings, roads on their own layer
+var humps := {}                # 20 m square -> the raised crossings and speed bumps that reach into it
+var slabs := {}                # 2 m squares where a sidewalk is of slabs or stone; elsewhere it is asphalt behind its kerb
+const SIDE_ASPHALT := Color(0.62, 0.62, 0.63)
+var hump_cells := {}           # cell -> the ones whose middle lies in it (built with the cell)
 
 
 func setup(w) -> void:
@@ -42,6 +46,24 @@ func setup(w) -> void:
 	fac = Facades.new()
 	_load_roads()
 	_load_paved()
+	var sl: Array = world.meta.get("slabs", [])
+	var all_slabs: bool = not world.meta.has("slabs")              # (a map built before this: slabs everywhere, as it was)
+	for k in range(0, sl.size() - 1, 2):
+		slabs[Vector2i(int(sl[k]), int(sl[k + 1]))] = true
+	if all_slabs:
+		slabs[Vector2i(1 << 30, 0)] = true
+	for h in world.meta.get("humps", []):
+		var r: float = maxf(float(h[4]), float(h[5]) + float(h[6])) + 0.5
+		for gx in range(int(floor((float(h[0]) - r) / 20.0)), int(floor((float(h[0]) + r) / 20.0)) + 1):
+			for gz in range(int(floor((float(h[1]) - r) / 20.0)), int(floor((float(h[1]) + r) / 20.0)) + 1):
+				var gk := Vector2i(gx, gz)
+				if not humps.has(gk):
+					humps[gk] = []
+				humps[gk].append(h)
+		var ck := cell_of(h[0], h[1])
+		if not hump_cells.has(ck):
+			hump_cells[ck] = []
+		hump_cells[ck].append(h)
 
 
 static func cell_of(x: float, z: float) -> Vector2i:
@@ -90,7 +112,8 @@ func _load_roads() -> void:
 		# (a road bridge: the fourth number of its first point says how wide the sidewalk is on each side of the
 		# deck, in tenths of a metre: a thousand times the left one and the right one)
 		var walk: float = data[i - n * 5 + 3] if kind == 4 and n > 0 else 0.0
-		ways.append([half, kind, mark, pts, nrm, fl, fr, dist, hs, ys, walk])
+		var walk_end: float = data[i - 5 + 3] if kind == 4 and n > 1 else walk       # (and of its last point: the far end)
+		ways.append([half, kind, mark, pts, nrm, fl, fr, dist, hs, ys, walk, walk_end])
 		for k in n - 1:
 			var mid := (pts[k] + pts[k + 1]) * 0.5
 			var key := cell_of(mid.x, mid.y)
@@ -206,6 +229,10 @@ func _work(budget: int) -> void:
 				_job["r"] += 2
 			if budget >= 0 and Time.get_ticks_usec() - t0 > budget:
 				return
+		if not _job.has("humps"):
+			_job["humps"] = true
+			for h in hump_cells.get(_job_key, []):
+				_hump(_job["roads"], _job["cv"], h)
 		while _job["b"] < recs.size() and not sweep:
 			fac.build(_job["mb"], recs[_job["b"]])
 			_job["b"] += 1
@@ -332,7 +359,75 @@ func _p(p: Vector2, lift := 0.125) -> Vector3:
 ## The height of the laid asphalt at a point, before its lift (NAN where there is none). The triangles of a
 ## cell are sorted by the 2.5 m square each lies in, the first time the cell is asked about.
 func surface_at(x: float, z: float) -> float:
-	return _laid_at(x, z, 0)
+	return _laid_at(x, z, 0) + hump_at(x, z)
+
+
+## How far a raised crossing or a speed bump lifts the asphalt at a point (0 nearly everywhere).
+func hump_at(x: float, z: float) -> float:
+	if humps.is_empty():
+		return 0.0
+	var list = humps.get(Vector2i(int(floor(x / 20.0)), int(floor(z / 20.0))))
+	if list == null:
+		return 0.0
+	var best := 0.0
+	for h in list:
+		var dx: float = x - float(h[0])
+		var dz: float = z - float(h[1])
+		best = maxf(best, _hump_h(h, dx * float(h[2]) + dz * float(h[3]), -dx * float(h[3]) + dz * float(h[2])))
+	return best
+
+
+## The height of one of them `s` metres along the road from its middle and `a` metres across. A speed bump is a round
+## back; a raised crossing is flat under the stripes with an eased ramp before and after. Both fall away to nothing
+## at the edge of the road, so the water runs past (and nothing stands up as a wall beside a drive).
+func _hump_h(h: Array, s: float, a: float) -> float:
+	var flat: float = h[5]
+	var ramp: float = h[6]
+	var t := absf(s)
+	var e: float = float(h[4]) - absf(a)
+	if t >= flat + ramp or e <= 0.0:
+		return 0.0
+	var y: float = h[7]
+	if t > flat:
+		var u := (t - flat) / ramp
+		y *= (1.0 - u * u) if int(h[8]) == 0 else (0.5 + 0.5 * cos(PI * u))
+	var edge := 0.4 if int(h[8]) == 0 else 0.15
+	return y * minf(1.0, e / edge)
+
+
+## A raised crossing or a speed bump, drawn and solid: asphalt laid over the asphalt of the road, following it.
+func _hump(mb, cv: PackedVector3Array, h: Array) -> void:
+	var c := Vector2(h[0], h[1])
+	var t := Vector2(h[2], h[3])
+	var n := Vector2(-t.y, t.x)
+	var half: float = h[4]
+	var reach: float = float(h[5]) + float(h[6])
+	var edge := 0.4 if int(h[8]) == 0 else 0.15
+	var across: Array = [-half + edge, half - edge]
+	var nb := maxi(2, int(ceil(half * 2.0 / 0.8)))
+	for j in nb + 1:
+		across.append(-half + 2.0 * half * float(j) / float(nb))
+	across.sort()
+	var na := maxi(4, int(ceil(reach * 2.0 / 0.3)))
+	var col := Color(0.35, 0.35, 0.37) if int(h[8]) == 0 else ASPHALT
+	var prev: Array = []
+	for i in na + 1:
+		var s := -reach + 2.0 * reach * float(i) / float(na)
+		var row: Array = []
+		for a in across:
+			var p: Vector2 = c + t * s + n * float(a)
+			row.append(Vector3(p.x, _laid_at(p.x, p.y, 0) + 0.10 + _hump_h(h, s, a) - 0.006, p.y))      # (its rim a hair under the road: no edge shows)
+		if i > 0:
+			for j in across.size() - 1:
+				var a0: Vector3 = prev[j]
+				var b0: Vector3 = prev[j + 1]
+				var b1: Vector3 = row[j + 1]
+				var a1: Vector3 = row[j]
+				if is_nan(a0.y + b0.y + b1.y + a1.y):
+					continue                                   # (off the asphalt)
+				mb.quad_auto("asphalt", a0, b0, b1, a1, Vector3.UP, col)
+				_quad_cv(cv, a0, b0, b1, a1)
+		prev = row
 
 
 ## The top of what is laid at a point, as it is drawn: the asphalt (lifted 10 cm over its ground) or the slabs of a
@@ -342,7 +437,7 @@ func top_at(x: float, z: float) -> float:
 	if not is_nan(walk):
 		return walk + 0.23
 	var road := _laid_at(x, z, 0)
-	return road + 0.10 if not is_nan(road) else NAN
+	return road + 0.10 + hump_at(x, z) if not is_nan(road) else NAN
 
 
 ## Which triangles of a cell's paving lie in each 2.5 m square, for finding the height at a point quickly.
@@ -439,6 +534,7 @@ func _paved_part(mb, cv: PackedVector3Array, part: int, arr: PackedFloat32Array,
 		var lift := 0.10 if part == 0 else 0.23
 		var m := "asphalt" if part == 0 else "sidewalk"
 		var col := ASPHALT if part == 0 else SIDEWALK
+		var all_slabs: bool = slabs.has(Vector2i(1 << 30, 0))
 		while i < to:
 			var a := Vector3(arr[i], arr[i + 1] + lift, arr[i + 2])
 			var b := Vector3(arr[i + 3], arr[i + 4] + lift, arr[i + 5])
@@ -446,6 +542,14 @@ func _paved_part(mb, cv: PackedVector3Array, part: int, arr: PackedFloat32Array,
 			i += 9
 			if minf(a.y, minf(b.y, c.y)) < 0.45:
 				continue                                       # out in the water
+			if part == 1 and not all_slabs:
+				var mid := (a + b + c) / 3.0
+				if slabs.has(Vector2i(floori(mid.x / 2.0), floori(mid.z / 2.0))):
+					mb.tri("sidewalk", a, b, c, up, SIDEWALK)
+				else:
+					mb.tri("asphalt", a, b, c, up, SIDE_ASPHALT)
+				cv.append(a); cv.append(b); cv.append(c)
+				continue
 			mb.tri(m, a, b, c, up, col)
 			cv.append(a); cv.append(b); cv.append(c)
 		return
@@ -713,20 +817,66 @@ func _bridge_segment(mb, cv: PackedVector3Array, way: Array, i: int) -> void:
 	var b1 := c1 - o1 * half
 	_solid(mb, cv, "asphalt" if road else ("trim" if conc else "clad"), a0, b0, b1, a1, up, ASPHALT if road else (CONCRETE.lightened(0.08) if conc else TIMBER))
 	mb.quad("trim", a0 - thick, b0 - thick, b1 - thick, a1 - thick, Vector3.DOWN, body)
+	# a plate of asphalt over each end of a road deck: from the deck's height 1.6 m in on it to the road's own
+	# height 0.8 m out on the road, strip by strip across. The road is laid on the ground at every 2.5 m and can
+	# stand a hand higher or lower than the deck at one side of the joint (13 cm at Øvre veg, where the road
+	# tilts and the deck does not); over the plate a wheel meets a ramp, not an edge.
+	if road and (i == 0 or i == n - 2):
+		var endc: Vector3 = c0 if i == 0 else c1
+		var endo: Vector3 = o0 if i == 0 else o1
+		var outw: Vector3 = ((c0 - c1) if i == 0 else (c1 - c0))
+		outw.y = 0.0
+		outw = outw.normalized()
+		var strips := maxi(2, int(half / 0.6))
+		var line: Array = []                       # for each point across: on the deck, at the joint, on the road
+		for k in strips + 1:
+			var off: float = lerpf(-half + 0.25, half - 0.25, float(k) / float(strips))
+			var j: Vector3 = endc + endo * off
+			var r0: float = top_at(j.x + outw.x * 0.06, j.z + outw.z * 0.06)
+			var r1: float = top_at(j.x + outw.x * 0.8, j.z + outw.z * 0.8)
+			if is_nan(r0) or is_nan(r1) or absf(r0 - j.y) > 0.5 or absf(r1 - j.y) > 0.6:
+				line.append(null)
+				continue
+			line.append([j - outw * minf(1.6, dist[n - 1] * 0.3) + Vector3(0, 0.012, 0), Vector3(j.x, maxf(j.y, r0) + 0.015, j.z), Vector3(j.x + outw.x * 0.8, r1 + 0.012, j.z + outw.z * 0.8)])
+		for k in strips:
+			if line[k] == null or line[k + 1] == null:
+				continue
+			var la: Array = line[k]
+			var lb: Array = line[k + 1]
+			if absf(la[1].y - la[0].y) < 0.02 and absf(lb[1].y - lb[0].y) < 0.02 and absf(la[2].y - la[1].y) < 0.03 and absf(lb[2].y - lb[1].y) < 0.03:
+				continue                           # (level already: nothing to bridge)
+			for h in 2:
+				var qa: Vector3 = la[h]
+				var qb: Vector3 = la[h + 1]
+				var qc: Vector3 = lb[h + 1]
+				var qd: Vector3 = lb[h]
+				if (qb - qa).cross(qd - qa).y < 0.0:
+					_solid(mb, cv, "asphalt", qa, qd, qc, qb, up, ASPHALT)
+				else:
+					_solid(mb, cv, "asphalt", qa, qb, qc, qd, up, ASPHALT)
 	# the sidewalks of the road carry on over the deck, a kerb's height over its asphalt, so that they do not
 	# stop dead at each end of the bridge (asked for at Romsdalsgata, 18 Nov)
 	if road and way.size() > 10 and float(way[10]) > 0.5:
 		var code := int(float(way[10]))
+		var code2 := int(float(way[11])) if way.size() > 11 and float(way[11]) > 0.5 else code
 		var kerb := Vector3(0, 0.13, 0)
+		var whole: float = maxf(dist[n - 1], 0.01)
 		for sg in [1.0, -1.0]:
 			var sgn: float = sg
-			var wide: float = float(code / 1000 if sgn > 0.0 else code % 1000) / 10.0
-			if wide < 0.4:
+			var wa: float = float(code / 1000 if sgn > 0.0 else code % 1000) / 10.0
+			var wb: float = float(code2 / 1000 if sgn > 0.0 else code2 % 1000) / 10.0
+			if wa < 0.4 and wb < 0.4:
 				continue
-			var e0: Vector3 = c0 + o0 * (half * sgn) + kerb
-			var e1: Vector3 = c1 + o1 * (half * sgn) + kerb
-			var i0: Vector3 = c0 + o0 * ((half - wide) * sgn) + kerb
-			var i1: Vector3 = c1 + o1 * ((half - wide) * sgn) + kerb
+			var wide0: float = lerpf(wa, wb, dist[i] / whole)          # as wide as the sidewalk it meets at each end
+			var wide1: float = lerpf(wa, wb, dist[i + 1] / whole)
+			# (it runs 30 cm out past each end of the deck, onto the sidewalk it meets: flush with the end, a slot a
+			# hand wide was left between the two)
+			var back: Vector3 = (c0 - c1).normalized() * (0.3 if i == 0 else 0.0)
+			var fwd: Vector3 = (c1 - c0).normalized() * (0.3 if i == n - 2 else 0.0)
+			var e0: Vector3 = c0 + o0 * (half * sgn) + kerb + back
+			var e1: Vector3 = c1 + o1 * (half * sgn) + kerb + fwd
+			var i0: Vector3 = c0 + o0 * ((half - wide0) * sgn) + kerb + back
+			var i1: Vector3 = c1 + o1 * ((half - wide1) * sgn) + kerb + fwd
 			if sgn > 0.0:
 				_solid(mb, cv, "sidewalk", e0, i0, i1, e1, up, SIDEWALK)
 				mb.quad("trim", i0, i0 - kerb, i1 - kerb, i1, -o0, KERB)

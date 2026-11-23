@@ -10,7 +10,9 @@ const TR := 3                 # 1 m terrain cells kept around the player, in eac
 const BCHUNK := 100.0         # building mesh chunk, metres (the same cells as scripts/detail.gd)
 const TREE_CHUNK := 320.0
 const TREE_RANGE := 2600.0    # how far trees are drawn at all
-const TREE_NEAR := 420.0      # and how far in full; beyond that each is a plain cone or ball
+const TREE_NEAR := 420.0      # and how far as a model; beyond that each is a picture on a card
+const TREE_FULL := 140.0      # how far a tree is drawn built in full (scripts/trees.gd); from there it is a plain cone or balls
+const Trees := preload("res://scripts/trees.gd")
 
 var x0 := 0.0
 var z0 := 0.0
@@ -335,7 +337,7 @@ func _build_terrain() -> void:
 	m2img.generate_mipmaps()
 	var m2tex := ImageTexture.create_from_image(m2img)
 	var detail_tex := {}
-	for nm in ["turf_albedo", "turf_normal", "stone_albedo", "stone_normal"]:
+	for nm in ["turf_albedo", "turf_normal", "rock_albedo", "rock_normal", "forest_albedo", "forest_normal"]:
 		var img := Image.new()
 		img.load_png_from_buffer(FileAccess.get_file_as_bytes(DIR + "textures/" + nm + ".png"))
 		img.generate_mipmaps()
@@ -344,8 +346,10 @@ func _build_terrain() -> void:
 		m.set_shader_parameter("mask2_tex", m2tex)
 		m.set_shader_parameter("turf_tex", detail_tex["turf_albedo"])
 		m.set_shader_parameter("turf_nrm", detail_tex["turf_normal"])
-		m.set_shader_parameter("stone_tex", detail_tex["stone_albedo"])
-		m.set_shader_parameter("stone_nrm", detail_tex["stone_normal"])
+		m.set_shader_parameter("stone_tex", detail_tex["rock_albedo"])
+		m.set_shader_parameter("stone_nrm", detail_tex["rock_normal"])
+		m.set_shader_parameter("forest_tex", detail_tex["forest_albedo"])
+		m.set_shader_parameter("forest_nrm", detail_tex["forest_normal"])
 		m.set_shader_parameter("mask_tex", mtex)
 		m.set_shader_parameter("noise_tex", _noise_tex)
 		m.set_shader_parameter("world_origin", Vector2(x0, z0))
@@ -914,7 +918,11 @@ func _build_trees() -> void:
 			[small, _at(0.6, 3.0, 0.4), Color(0.56, 0.20, 0.10)],
 			[small, _at(-0.6, 3.5, -0.3), Color(0.30, 0.38, 0.14)]]),
 	]
-	var cards := await _tree_cards(meshes)
+	# the same five built in full, for the trees close by (scripts/trees.gd)
+	var maker = Trees.new()
+	var plain_mat: Material = (meshes[0] as ArrayMesh).surface_get_material(0)
+	var fine := [maker.spruce(plain_mat), maker.broadleaf(plain_mat), maker.pine(plain_mat), maker.birch(plain_mat), maker.rowan(plain_mat)]
+	var cards := await _tree_cards(fine)
 	var card_mesh := QuadMesh.new()
 	card_mesh.size = Vector2(1.0, 1.0)
 	card_mesh.center_offset = Vector3(0, 0.5, 0)
@@ -940,6 +948,12 @@ func _build_trees() -> void:
 	sway.shader = load("res://shaders/tree.gdshader")
 	var sway_leafy := sway.duplicate() as ShaderMaterial   # birch, rowan and the round broadleaf: bare in winter
 	sway_leafy.set_shader_parameter("leafy", 1.0)
+	var sway_full := sway.duplicate() as ShaderMaterial
+	sway_full.set_shader_parameter("full", 1.0)
+	var sway_full_leafy := sway_leafy.duplicate() as ShaderMaterial
+	sway_full_leafy.set_shader_parameter("full", 1.0)
+	for m in [sway, sway_leafy, sway_full, sway_full_leafy]:
+		(m as ShaderMaterial).set_shader_parameter("full_to", TREE_FULL)
 	for key in groups:
 		var ids: PackedInt32Array = groups[key]
 		var mm := MultiMesh.new()
@@ -962,6 +976,19 @@ func _build_trees() -> void:
 		mmi.visibility_range_end = TREE_NEAR
 		mmi.visibility_range_end_margin = 30.0
 		root.add_child(mmi)
+		# and built in full, drawn where a tree of this stretch can be within TREE_FULL of the camera
+		var full_mm := MultiMesh.new()
+		full_mm.transform_format = MultiMesh.TRANSFORM_3D
+		full_mm.mesh = fine[key.z]
+		full_mm.instance_count = ids.size()
+		for j in ids.size():
+			full_mm.set_instance_transform(j, mm.get_instance_transform(j))
+		var full_mi := MultiMeshInstance3D.new()
+		full_mi.multimesh = full_mm
+		full_mi.position = origin
+		full_mi.material_override = sway_full_leafy if key.z in [1, 3, 4] else sway_full
+		full_mi.visibility_range_end = TREE_FULL + TREE_CHUNK * 0.75
+		root.add_child(full_mi)
 		# the same trees again as pictures on cards, for the far view
 		var fm := MultiMesh.new()
 		fm.transform_format = MultiMesh.TRANSFORM_3D

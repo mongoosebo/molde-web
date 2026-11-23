@@ -38,6 +38,7 @@ var OVERHANG := 0.36
 var SCREENS := [Vector2(-0.97, -0.44), Vector2(0.99, 1.47)]     # windscreen and rear window, along the car
 var SIDE_GLASS := Vector2(-0.70, 1.20)
 var PILLARS := [Vector2(0.17, 0.27)]          # black pillars between the side windows
+var MODEL := "res://models/volvo.glb"         # the Volvo's own model, if the file is there (see _own_model)
 var PAINT_SHADER := "res://shaders/car_paint.gdshader"
 var BODY_BOX := Vector3(1.78, 1.25, 4.8)      # for bumping into when parked
 var AERIAL_LEN := 0.95
@@ -86,12 +87,16 @@ var _tail_root: Node3D           # top level, so the links are placed in world s
 var _smoke: Array = []           # CPUParticles3D at the two rear wheels
 var _smoking := false
 var _mats := {}
+var _slowing := false            # the brakes are on (for the brake lamps of a model)
+var _brake_lit := 0.0
+var _own_mat: ShaderMaterial     # the model's material, if the car is a model (see _own_model)
 var _smoke_idle := 99.0         # seconds since the rear wheels last smoked
 
 
 func _ready() -> void:
 	_chassis = Node3D.new()
 	add_child(_chassis)
+	var own := _own_model()
 	_mats = {
 		"paint": _paint(),
 		"glass": _mat(Color(0.05, 0.07, 0.09), 0.08, 0.6),
@@ -114,6 +119,19 @@ func _ready() -> void:
 	body_mi.mesh = shell.commit(_mats)
 	_body_mesh = body_mi.mesh
 	_chassis.add_child(body_mi)
+	if not own.is_empty():
+		body_mi.visible = false                               # (the built body stays as what one bumps into)
+		_chassis.add_child(own["body"])
+		# the dark under a car: without it the car seems to float a little over the ground. A soft shadow laid
+		# straight down on whatever is under it, darkest in the middle.
+		var under := Decal.new()
+		under.size = Vector3(2.5, 0.9, HALF_LEN * 2.0 + 0.5)
+		under.position = Vector3(0.0, 0.05, 0.0)
+		under.texture_albedo = _under_shadow()
+		under.albedo_mix = 1.0
+		under.upper_fade = 0.02
+		under.lower_fade = 0.6
+		add_child(under)
 
 	var wheel := Geo.new()
 	_build_wheel(wheel)
@@ -137,6 +155,14 @@ func _ready() -> void:
 			turn.add_child(roll)
 			var mi := MeshInstance3D.new()
 			mi.mesh = wheel_mesh
+			if not own.is_empty():
+				# the model's own wheel, laid round the same axle: its middle on the hub, its axle along the roll
+				# the model's own wheel: it lies round the origin with its axle along X, the roll's axle is its Y
+				var mine: Array = own["wheels"][(0 if front else 2) + (0 if sx < 0.0 else 1)]
+				hub.position = mine[1]
+				mi.free()                                         # (the built wheel is not needed)
+				mi = mine[0]
+				mi.transform = Transform3D(turn.basis.inverse(), Vector3.ZERO)
 			roll.add_child(mi)
 			_wheels.append([hub, roll, front, hub.position])
 	# the aerial and the fox tail
@@ -148,6 +174,7 @@ func _ready() -> void:
 	rod.material = _mat(Color(0.75, 0.76, 0.78), 0.3, 0.9)
 	_aerial = MeshInstance3D.new()
 	_aerial.mesh = rod
+	_aerial.visible = own.is_empty()
 	_chassis.add_child(_aerial)
 	_tail_root = Node3D.new()
 	_tail_root.top_level = true
@@ -216,6 +243,77 @@ func _ready() -> void:
 	add_child(body)
 	_place_parts()
 	_reset_tail()
+
+
+## The Volvo's own model, if there is one (models/volvo.glb: made in Meshy by Magnus, 21 Nov, and made fit for the
+## game by tools/car_model.py: in the game's frame, the body and four wheels, each wheel round its own axle with
+## its hub's place as the node's position, normals, and beside it volvo_mask.png saying where the glass and the
+## lamps are). Only for the Volvo itself, not for the cars that are this script with other numbers. Gives {"body":
+## MeshInstance3D, "wheels": [[mesh instance, hub position] front left, front right, rear left, rear right]} and
+## sets the axles, the track and the wheels' radius after the model; {} if there is no model: the built car stays.
+func _own_model() -> Dictionary:
+	if (get_script() as Script).resource_path != "res://scripts/car.gd" or not FileAccess.file_exists(MODEL):
+		return {}
+	var doc := GLTFDocument.new()
+	var state := GLTFState.new()
+	if doc.append_from_file(MODEL, state) != OK:
+		return {}
+	var scene: Node = doc.generate_scene(state)
+	if scene == null:
+		return {}
+	var body: MeshInstance3D = scene.find_child("body", true, false)
+	var wheels := []
+	for nm in ["wheel_fl", "wheel_fr", "wheel_rl", "wheel_rr"]:
+		var w: MeshInstance3D = scene.find_child(nm, true, false)
+		if w != null:
+			wheels.append([w, w.position])
+	if body == null or wheels.size() != 4:
+		scene.free()
+		return {}
+	_own_mat = _model_material(body.mesh.surface_get_material(0))
+	for part in [body, wheels[0][0], wheels[1][0], wheels[2][0], wheels[3][0]]:
+		part.get_parent().remove_child(part)
+		part.position = Vector3.ZERO
+		part.material_override = _own_mat
+	scene.free()
+	WHEEL_R = wheels[0][1].y
+	AXLE_F = wheels[0][1].z
+	AXLE_R = wheels[2][1].z
+	TRACK = wheels[1][1].x
+	FOX_TAIL = false                                          # (the aerial and its fox tail belonged to the built car)
+	return {"body": body, "wheels": wheels}
+
+
+## The model's one material as the game draws it (shaders/car_model.gdshader): its own pictures, with mipmaps, and
+## the mask that says where the glass and the lamps are.
+func _model_material(from: Material) -> ShaderMaterial:
+	var mat := ShaderMaterial.new()
+	mat.shader = load("res://shaders/car_model.gdshader")
+	var std := from as BaseMaterial3D
+	var pics := {"colour_tex": std.albedo_texture, "orm_tex": std.roughness_texture, "normal_tex": std.normal_texture}
+	for key in pics:
+		var img: Image = (pics[key] as Texture2D).get_image()
+		if img.is_compressed():
+			img.decompress()
+		img.generate_mipmaps()
+		mat.set_shader_parameter(key, ImageTexture.create_from_image(img))
+	var mask := Image.new()
+	mask.load_png_from_buffer(FileAccess.get_file_as_bytes(MODEL.get_basename() + "_mask.png"))
+	mask.generate_mipmaps()
+	mat.set_shader_parameter("mask_tex", ImageTexture.create_from_image(mask))
+	return mat
+
+
+## The picture of the shadow under a car: black, clear at the edges, darkest under the middle.
+func _under_shadow() -> ImageTexture:
+	var img := Image.create(64, 128, false, Image.FORMAT_RGBA8)
+	for y in 128:
+		for x in 64:
+			var dx := absf((float(x) + 0.5) / 32.0 - 1.0)
+			var dy := absf((float(y) + 0.5) / 64.0 - 1.0)
+			var a := (1.0 - smoothstep(0.55, 1.0, dx)) * (1.0 - smoothstep(0.70, 1.0, dy))
+			img.set_pixel(x, y, Color(0.0, 0.0, 0.0, 0.62 * a))
+	return ImageTexture.create_from_image(img)
 
 
 func _puff_texture() -> GradientTexture2D:
@@ -340,6 +438,7 @@ func animate(speed: float, steer: float, delta: float, exclude: Array = []) -> v
 		_last_vy = 0.0
 		_fresh = false
 	var accel := clampf((speed - _last_speed) / delta, -25.0, 25.0)
+	_slowing = absf(speed) > 0.5 and accel * signf(speed) < -2.5
 	var yaw_rate := angle_difference(_last_yaw, yaw) / delta
 	var lateral := clampf(speed * yaw_rate, -16.0, 16.0)
 	var vy := (y - _last_y) / delta
@@ -421,6 +520,13 @@ func _reset_tail() -> void:
 func _process(delta: float) -> void:
 	if not is_inside_tree():
 		return
+	if _own_mat != null:
+		# the model's lamps follow the built car's lamp material, which the clock turns up at dusk (scripts/daytime.gd)
+		var lamp: StandardMaterial3D = _mats["lamp"]
+		var day: float = float(lamp.get_meta("day")) if lamp.has_meta("day") else lamp.emission_energy_multiplier
+		_own_mat.set_shader_parameter("lamps", clampf((lamp.emission_energy_multiplier / maxf(day, 0.01) - 1.0) / 5.0, 0.0, 1.0))
+		_brake_lit = move_toward(_brake_lit, 1.0 if _slowing else 0.0, delta * 8.0)
+		_own_mat.set_shader_parameter("braking", _brake_lit)
 	if not FOX_TAIL:
 		if not _smoking:
 			_smoke_idle += delta

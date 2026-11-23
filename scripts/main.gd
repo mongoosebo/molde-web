@@ -36,6 +36,13 @@ var jobs                            # scripts/jobs.gd: jobs, sights, the ferry, 
 var indoors                         # scripts/indoors.gd: a way into Molde Storsenter
 
 const HELI_AT := Vector2(14.0, 50.0)
+## Where the player starts, and starts again: the middle of Rutebilholdeplassen, the bus square in the centre
+## ("make the player always spawn in at Bussholdeplassen in sentrum", 21 Nov). The vehicles still stand at
+## Rådhusplassen (world.spawn), 140 m to the west.
+const START_AT := Vector2(131.0, 30.0)
+const CESSNA_AT := Vector2(4979.1, -884.5)      # on the apron at Årø (note of 21 Nov)
+const CESSNA_TURN := 1.9
+var planes: Array = []                           # [the aeroplane, where it stands, which way]
 
 
 func _ready() -> void:
@@ -67,9 +74,9 @@ func _ready() -> void:
 	player = PlayerScript.new()
 	player.name = "Player"
 	player.world = world
-	var s: Vector2 = world.spawn
+	var s: Vector2 = START_AT
 	player.position = Vector3(s.x, world.height_at(s.x, s.y) + 0.5, s.y)
-	player.yaw = 0.0                # facing north across Rådhusplassen, toward the town hall
+	player.yaw = 0.0                # facing north across the bus square, toward Storgata
 	world.update_streaming(player.position)
 	world.flush(player.position)
 	add_child(player)
@@ -92,6 +99,17 @@ func _ready() -> void:
 	player.atv = atv
 	bus = made[6]
 	player.vehicles = [atv, car, integra, heli, merc, bike, bus]
+	# aeroplanes at the airport: a Cessna on the apron, and the airliners where the map stands them
+	var plane_script: GDScript = load("res://scripts/aeroplane.gd")
+	planes.clear()
+	for q in [["cessna", Vector3(CESSNA_AT.x, 0, CESSNA_AT.y), CESSNA_TURN]] + world.props.airliners.map(func(r): return ["airliner", r[0], r[1]]):
+		var pl := Node3D.new()
+		pl.name = "Cessna" if q[0] == "cessna" else "Airliner"
+		pl.set_script(plane_script)
+		pl.kind = q[0]
+		add_child(pl)
+		planes.append([pl, q[1], q[2]])
+		player.vehicles.append(pl)
 	place_vehicles()
 	sound = Node.new()
 	sound.name = "Sound"
@@ -231,6 +249,10 @@ func _ready() -> void:
 			_bike_test_and_quit()
 		if "--heli" in OS.get_cmdline_user_args():
 			_heli_test_and_quit()
+		if "--plane" in OS.get_cmdline_user_args():
+			_plane_test_and_quit()
+		if "--handling" in OS.get_cmdline_user_args():
+			_handling_test_and_quit()
 	hud.start(world, player)
 
 
@@ -250,6 +272,11 @@ func place_vehicles() -> void:
 	var bb: Array = world.meta.get("bicycle", [])
 	if bb.size() == 2:
 		_stand(v[5], bb[0], bb[1], 0.0, 0.07)
+	for q in planes:
+		_stand(q[0], (q[1] as Vector3).x, (q[1] as Vector3).z, q[2])
+		var py: float = world.detail.top_at((q[1] as Vector3).x, (q[1] as Vector3).z)
+		if not is_nan(py):
+			(q[0] as Node3D).global_position.y = py
 
 
 ## The bus stands at the bus square, by the kerb where its line starts, facing the way it goes.
@@ -280,13 +307,12 @@ func _stand(v: Node3D, x: float, z: float, turn: float, lift := 0.0) -> void:
 		v.set_parked(true)
 
 
-## Start again at Rådhusplassen: the player out of any vehicle and back at the spawn point, facing north toward
-## the town hall, standing still with full breath; every vehicle back where it starts. The time of day, the
+## Start again at the bus square: the player out of any vehicle and back at START_AT, facing north, standing still with full breath; every vehicle back where it starts. The time of day, the
 ## weather and the settings stay as they are.
 func reset_game() -> void:
 	if player.driving:
 		player._toggle_atv(true)
-	var s: Vector2 = world.spawn
+	var s: Vector2 = START_AT
 	player.global_position = Vector3(s.x, world.height_at(s.x, s.y) + 0.5, s.y)
 	player.velocity = Vector3.ZERO
 	player.yaw = 0.0
@@ -586,7 +612,7 @@ func _models_shot_and_quit() -> void:
 	player.reset_physics_interpolation()
 	world.flush(player.global_position)
 	var shown := []
-	for i in traffic._models.size():
+	for i in traffic._n_cars:                                       # (the cars; the lorries after them in the list are not part of this)
 		var c := {"model": i, "col": (traffic._models[i]["paints"] as Array)[i % 5]}
 		traffic._show(c)
 		var at := Vector2(-7.0 + 5.7 * float(i % 5), 40.0 + 7.0 * float(i / 5))
@@ -1176,6 +1202,170 @@ func _count_triangles(node: Node) -> int:
 	for c in node.get_children():
 		total += _count_triangles(c)
 	return total
+## `./run.sh -- --handling`: the Volvo on the runway at Årø, which is long, wide and level: how it pulls away, how
+## it stops, how tight it turns at a town speed and at speed, what the handbrake does, and whether a slide can be
+## caught. Prints the numbers; they are what the handling was tuned by.
+func _handling_test_and_quit() -> void:
+	player.set_process_unhandled_input(false)
+	var car: Node3D = player.vehicles[1]
+	var problems := 0
+	var start := func():
+		for a in ["move_forward", "move_back", "move_left", "move_right", "jump", "sprint"]:
+			Input.action_release(a)
+		if player.driving:
+			player._toggle_atv(true)
+		car.global_transform = Transform3D(Basis(Vector3.UP, -1.239), Vector3(4760.0, world.height_at(4760.0, -635.5) + 0.3, -635.5))
+		player.global_position = car.global_position + Vector3(0, 0.3, 2.0)
+		player.reset_physics_interpolation()
+		world.flush(player.global_position)
+	var steps := func(n: int):
+		for i in n:
+			await get_tree().physics_frame
+	start.call()
+	await steps.call(40)
+	player._toggle_atv()
+	Input.action_press("move_forward")
+	var t60 := -1.0
+	var t100 := -1.0
+	for i in 600:
+		await get_tree().physics_frame
+		if t60 < 0.0 and player._drive_speed * 3.6 >= 60.0:
+			t60 = float(i) / 60.0
+		if t100 < 0.0 and player._drive_speed * 3.6 >= 100.0:
+			t100 = float(i) / 60.0
+	print("HANDLING 0-60 km/h in ", snappedf(t60, 0.1), " s, 0-100 in ", snappedf(t100, 0.1), " s, after 10 s ", snappedf(player._drive_speed * 3.6, 1.0), " km/h")
+	if t100 < 3.5 or t100 > 9.0:
+		problems += 1
+	# braking from that speed
+	Input.action_release("move_forward")
+	Input.action_press("move_back")
+	var at0: Vector3 = player.global_position
+	var v0: float = player._drive_speed
+	var tb := 0
+	while player._drive_speed > 0.5 and tb < 900:
+		await get_tree().physics_frame
+		tb += 1
+	Input.action_release("move_back")
+	print("HANDLING stopped from ", snappedf(v0 * 3.6, 1.0), " km/h in ", snappedf(at0.distance_to(player.global_position), 1.0), " m, ", snappedf(tb / 60.0, 0.1), " s")
+	# a steady turn at about 50 km/h and at about 110: how tight, and whether the tail stays behind
+	for want_kmh in [50.0, 110.0]:
+		start.call()
+		await steps.call(30)
+		player._toggle_atv()
+		Input.action_press("move_forward")
+		while player._drive_speed * 3.6 < want_kmh:
+			await get_tree().physics_frame
+		Input.action_press("move_right")
+		var h0: float = player._heading
+		var turned := 0.0
+		var slip_max := 0.0
+		for i in 120:
+			await get_tree().physics_frame
+			slip_max = maxf(slip_max, absf(angle_difference(player._course, player._heading)))
+		turned = absf(angle_difference(h0, player._heading))
+		var v: float = absf(player._drive_speed)
+		print("HANDLING full lock at ", want_kmh, " km/h for 2 s: turned ", snappedf(turned, 0.01), " rad, now ", snappedf(v * 3.6, 1.0), " km/h, sideways pull ", snappedf(v * absf(player._yaw_rate) / 9.81, 0.01), " g, most slip ", snappedf(slip_max, 0.01), " rad")
+		Input.action_release("move_right")
+		Input.action_release("move_forward")
+	# the handbrake at 70 km/h with the wheel hard over, then let go and straightened: does it come round, and back
+	start.call()
+	await steps.call(30)
+	player._toggle_atv()
+	Input.action_press("move_forward")
+	while player._drive_speed * 3.6 < 70.0:
+		await get_tree().physics_frame
+	Input.action_press("move_left")
+	Input.action_press("jump")
+	var hh: float = player._heading
+	var slip2 := 0.0
+	for i in 75:
+		await get_tree().physics_frame
+		slip2 = maxf(slip2, absf(angle_difference(player._course, player._heading)))
+	var round_ := absf(angle_difference(hh, player._heading))
+	Input.action_release("jump")
+	Input.action_release("move_left")
+	for i in 120:
+		await get_tree().physics_frame
+	var left_over := absf(angle_difference(player._course, player._heading))
+	print("HANDLING handbrake at 70 km/h for 1.25 s: came round ", snappedf(round_, 0.01), " rad, most slip ", snappedf(slip2, 0.01), " rad; 2 s after letting go: slip ", snappedf(left_over, 0.01), " rad at ", snappedf(absf(player._drive_speed) * 3.6, 1.0), " km/h")
+	if round_ < 0.8 or slip2 < 0.3 or left_over > 0.15:
+		problems += 1
+	Input.action_release("move_forward")
+	if problems > 0:
+		print("HANDLING PROBLEMS: ", problems)
+	get_tree().quit()
+
+
+## `./run.sh -- --plane`: get into the Cessna, open the throttle, run along the apron, lift off, climb, turn, and
+## then the same in an airliner. Says how fast and how high after each stretch, and saves pictures.
+func _plane_test_and_quit() -> void:
+	player.set_process_unhandled_input(false)
+	var problems := 0
+	for which in [0, 1]:
+		if which >= planes.size():
+			break
+		var pl: Node3D = planes[which][0]
+		var tag := "CESSNA" if which == 0 else "AIRLINER"
+		player.global_position = pl.global_position + Vector3(-3.0 if which == 0 else -9.0, 0.5, 0.0)
+		player.reset_physics_interpolation()
+		world.flush(player.global_position)
+		for i in 40:
+			await get_tree().process_frame
+		player.yaw = pl.global_rotation.y + 0.9
+		player.pitch = -0.15
+		print("PLANE ", tag, " near: ", player.near_atv(), " — ", player.vehicle_label(), ", triangles ", _count_triangles(pl))
+		get_viewport().get_texture().get_image().save_png("res://data/shot_plane%d_0.png" % which)
+		player._toggle_atv()
+		if not player.driving:
+			problems += 1
+			print("PLANE ", tag, ": could not get in")
+			continue
+		# onto the west end of the runway at Årø, turned along it
+		player._heading = -1.239
+		player.yaw = player._heading
+		player.global_position = Vector3(4720.0, world.height_at(4720.0, -621.7) + 0.3, -621.7)
+		player.reset_physics_interpolation()
+		world.flush(player.global_position)
+		for i in 30:
+			await get_tree().process_frame
+		var y0: float = player.global_position.y
+		Input.action_press("move_forward")
+		await get_tree().create_timer(4.0).timeout
+		print("PLANE ", tag, " after 4 s of throttle: ", snappedf(player._drive_speed * 3.6, 1.0), " km/h, throttle ", snappedf(player.plane_throttle, 0.01), ", on the ground ", player.is_on_floor())
+		player.pitch = 0.05
+		var lifted := -1.0
+		for i in 400:
+			await get_tree().physics_frame
+			if lifted < 0.0 and player.global_position.y > y0 + 3.0:
+				lifted = float(i) / 60.0 + 4.0
+		print("PLANE ", tag, " left the ground after ", snappedf(lifted, 0.1), " s; now ", snappedf(player._drive_speed * 3.6, 1.0), " km/h at ", snappedf(player.global_position.y - y0, 1.0), " m over the runway")
+		get_viewport().get_texture().get_image().save_png("res://data/shot_plane%d_1.png" % which)
+		if lifted < 0.0 or player.global_position.y < y0 + 15.0:
+			problems += 1
+		# a turn to the left, level
+		player.pitch = -0.22
+		player.yaw += 1.2
+		var h0: float = player._heading
+		await get_tree().create_timer(5.0).timeout
+		print("PLANE ", tag, " turned ", snappedf(absf(angle_difference(h0, player._heading)), 0.01), " rad in 5 s, banked ", snappedf(player._plane_roll, 0.01), ", height ", snappedf(player.global_position.y - y0, 1.0), " m")
+		get_viewport().get_texture().get_image().save_png("res://data/shot_plane%d_2.png" % which)
+		if absf(angle_difference(h0, player._heading)) < 0.5:
+			problems += 1
+		# throttle closed: it slows, and below its stalling speed it sinks
+		Input.action_release("move_forward")
+		Input.action_press("move_back")
+		player.pitch = 0.1
+		await get_tree().create_timer(9.0).timeout
+		print("PLANE ", tag, " with the throttle closed for 9 s: ", snappedf(player._drive_speed * 3.6, 1.0), " km/h, sinking ", snappedf(player._plane_sink, 0.1), " m/s, height ", snappedf(player.global_position.y - y0, 1.0), " m")
+		Input.action_release("move_back")
+		player._toggle_atv(true)
+		for i in 10:
+			await get_tree().process_frame
+	if problems > 0:
+		print("PLANE PROBLEMS: ", problems)
+	get_tree().quit()
+
+
 ## `./run.sh -- --heli`: get into the helicopter, wait for the rotor, climb, fly off, come down, land.
 func _heli_test_and_quit() -> void:
 	player.set_process_unhandled_input(false)

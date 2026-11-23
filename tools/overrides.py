@@ -106,7 +106,7 @@ BUILDINGS[976348871] = {"levels": 5}                  # the apartment block on E
 BUILDINGS[976346084] = {"name": "Bunnpris"}           # Bunnpris sentrum, Fjordgata
 BUILDINGS[976346023] = {"join": True}                 # Romsdalsgata: built wall to wall with its neighbours
 DOOR_SIGNS += [{"at": (-84.3, 108.4), "text": "BUNNPRIS", "shop": True, "osm_id": 976346084}]         # the way in to Bunnpris
-LASER_BUILDINGS[1] = {"name": "Roseby", "kind": "retail", "window": (935, 1165, -260, -95), "min_h": 4.0, "replaces": [401877342], "one": True}
+LASER_BUILDINGS[1] = {"name": "Roseby", "kind": "retail", "window": (935, 1165, -260, -95), "min_h": 4.0, "replaces": [], "one": True}      # (Roseby Nord, way 401877342, stands by itself west of it and is kept as the map has it: it was replaced here and then lost, 21 Nov)
 PLAYGROUNDS = [(224.3, 82.2)]                         # Apoteker Aas gate
 STATUES = [{"kind": "donut", "at": (234.4, 78.6), "height": 4.0}]                # a stone ring standing on edge
 
@@ -224,3 +224,94 @@ BUILDINGS[401863788] = {"name": "Kiwi Grandgården"}
 BUILDINGS[827761794] = {"plain": True}                                               # Tøndervegen: a roof that came out broken
 BUILDINGS[1080586318] = {"add_levels": 2}                                            # taller still
 DOOR_SIGNS += [{"at": (2019.9, -790.0), "text": "BUNNPRIS", "shop": True, "osm_id": 976350721}]   # Bunnpris Fuglset: the shop front toward its car park
+
+# ---- notes of 20 November 2026, 11:18 ----
+NO_TREES += [(1504.83, -5.94), (1521.88, -38.22), (1966.76, -272.12), (2036.82, -225.86)]      # Birger Hatlebakks veg, Enenvegen, Fannestrandvegen
+NO_TREES_IN += [(1926.7, -293.3, 17.0)]                                       # the yard at Bolsønes: five trees where the buses and lorries stand
+PAVING_POCKETS += [(65.9, 50.3, 20)]                                          # Rutebilholdeplassen: slabs between the wall and the sidewalk
+ASPHALT_POCKETS += [(1315.2, 6.4, 30)]                                        # Birger Hatlebakks veg: the strip between the road and the walk
+# ---- notes of 20 November 2026, evening ----
+BUILDINGS[182591921] = {"name": "Oscar Sylte", "wall": (208, 208, 205)}       # Fannestrandvegen at Årø: light grey
+SITES.append({"kind": "wall_sign", "osm_id": 182591921, "at": (4644.6, -1002.4), "toward": (4651.4, -989.0), "text": "Oscar Sylte", "ink": (0.70, 0.08, 0.10), "tall": 2.0, "up": 5.5, "long": True})   # on the long wall to the south, toward the road
+
+ASPHALT_POCKETS += [(1479.0, -8.4, 30)]                                       # Moldegård: the grass left round the small hall (note 5 of 20 Nov; the yard rule passed it by)
+# Buses and lorries standing parked: (kind, which of its colours, x, z, the way it faces as (dx, dz)). kind is
+# "bus" or one of scripts/truck.gd's ("box", "tipper", "tank", "semi"). The yard at Bolsønes, inside the loop of
+# its drive: five buses in a row at the north end, six lorries at the south end.
+PARKED_BIG = []
+# (first they stood nose to the north and to the south, in two rows across the yard; they are to stand east to
+# west: note of 20 Nov, evening. So: one above the other up the yard, every one with its nose to the west.)
+_c, _d, _a = (1922.0, -296.5), (0.2208, -0.9753), (0.9753, 0.2208)             # the middle of the yard, the way its long side runs (north), and across (east)
+for _k in range(5):
+    _s = 20.0 - 3.5 * _k
+    PARKED_BIG.append(("bus", 0, round(_c[0] + _d[0] * _s + _a[0] * 1.5, 2), round(_c[1] + _d[1] * _s + _a[1] * 1.5, 2), -_a[0], -_a[1]))
+for _k, (_kind, _paint) in enumerate((("box", 0), ("semi", 0), ("tipper", 0), ("semi", 1), ("tank", 0), ("box", 1), ("tipper", 1))):
+    _s = 1.5 - 3.7 * _k
+    _o = 1.5 if _kind == "semi" else -2.5
+    PARKED_BIG.append((_kind, _paint, round(_c[0] + _d[0] * _s + _a[0] * _o, 2), round(_c[1] + _d[1] * _s + _a[1] * _o, 2), -_a[0], -_a[1]))
+
+# ---- notes of the late evening, 20 November
+# Lakes drawn as relations whose outlines are not taken in (the fountain basin on Rådhusplassen is built by hand).
+NO_WATER_RELATIONS = {21255902}
+# Røysan, the filling station on Julsundvegen: asphalt under and round the roof over the pumps, no trees there,
+# the pumps in rows east to west, and four self-service car wash bays on the grass east of it.
+ASPHALT_POCKETS += [(-931.9, 390.7, 30), (-916.0, 392.5, 30), (-905.5, 400.3, 32)]
+NO_TREES += [(-931.29, 394.83), (-919.9, 395.03)]
+NO_TREES_IN += [(-905.5, 401.0, 13.0)]
+CANOPY_TURNED = [(-925.5, 391.4)]
+SITES.append({"kind": "carwash", "at": (-905.5, 401.0), "along": (0.0, 1.0), "bays": 4})      # (the bays in a row north to south: the ways in, and the sign, toward the west; note of 20 Nov, 22:57)
+# Julsundvegen: ProGym has the ground floor of this block; a black board with the name in yellow over its windows.
+SITES.append({"kind": "wall_sign", "osm_id": 945095512, "at": (-896.4, 349.1), "toward": (-896.3, 362.8), "text": "ProGym", "ink": (0.98, 0.80, 0.05), "back": (0.03, 0.03, 0.03), "tall": 0.6, "up": 5.9})
+# By Moldetrappa: the wedge between the two buildings and the yard is asphalt at the yard's height, not a pit.
+ASPHALT_POCKETS += [(389.1, -101.4, 30)]
+FILL_POCKETS = [(389.1, -101.4)]
+
+# ---- notes of 20 November, 23:00
+BUILDINGS[679497293] = {"wall": (238, 237, 232)}                                  # Øvre veg: white
+BUILDINGS[684110684] = {"wall": (238, 237, 232)}                                  # Fannestrandvegen, Grandfjæra: white
+BUILDINGS[945015073] = {"wall": (150, 152, 154)}                                  # Moldegård: grey
+BUILDINGS[688861943] = {"name": "Jula", "wall": (74, 76, 80)}                     # Moldegård: dark grey, JULA white on red on its west wall
+SITES.append({"kind": "wall_sign", "osm_id": 688861943, "at": (1253.9, -223.8), "toward": (1240.0, -229.0), "text": "JULA", "ink": (1.0, 1.0, 1.0), "back": (0.82, 0.05, 0.10), "tall": 2.2, "up": 5.0, "long": True})
+# Kviltorp: the shopping centre with Bunnpris in it, the name on its east wall.
+BUILDINGS[976337449] = {"name": "Bunnpris"}
+SITES.append({"kind": "wall_sign", "osm_id": 976337449, "at": (3603.6, -591.3), "toward": (3615.0, -588.0), "text": "BUNNPRIS", "ink": (0.85, 0.08, 0.10), "back": (1.0, 0.84, 0.05), "tall": 1.4, "up": 4.6})
+# Lingedalsvegen: Uno-X, pumps with nobody minding them.
+SITES.append({"kind": "pumps", "at": (1327.3, -220.7), "along": (0.0, 1.0), "name": "UNO-X", "count": 2, "across": True})      # (one north, one south, each turned across the row: notes of 20 and 21 Nov)
+
+# ---- notes of 21 November, 00:48-01:31
+NO_TREES += [(218.03, -6.14), (337.05, 6.17)]                                     # Strandgata
+WHITE = (238, 237, 232)
+BUILDINGS[938017067] = {"levels": 5}                                              # Britvegen: student housing built after the laser flew; five storeys
+BUILDINGS[945766636] = {"levels": 1, "wall": (226, 205, 140), "roof": (44, 44, 48)}     # Moldelivegen: a yellow house under black tiles; its eaves stood at the uphill ground, now a storey over it
+BUILDINGS[945010322] = {"wall": WHITE}                                            # Lingedalsvegen
+BUILDINGS[945095418] = {"wall": WHITE}                                            # Bergvegen
+BUILDINGS[376823140] = {"name": "Coop Mega", "wall": WHITE, "plain": True, "levels": 2}       # Bekkevoll: white boarding, one tall storey under a flat roof (road photos)
+BUILDINGS[370156903] = {"name": "Plantasjen", "wall": (228, 234, 230), "roof": (200, 214, 210)}  # Bjørset: the garden centre's glasshouses
+BUILDINGS[976348542] = {"wall": (226, 224, 214)}                                  # and its hall of pale boards beside them
+BUILDINGS[401877621] = {"plain": True}                                            # the kiosk at the ferry quay: its fitted roof left a gap one saw through
+SITES.append({"kind": "wall_sign", "osm_id": 376823140, "at": (-995.0, -255.0), "toward": (-995.0, -265.0), "text": "Coop Mega", "ink": (1.0, 1.0, 1.0), "back": (0.0, 0.40, 0.28), "tall": 1.3, "up": 4.6, "long": True})
+SITES.append({"kind": "wall_sign", "osm_id": 370156903, "at": (-1405.0, -174.0), "toward": (-1400.0, -160.0), "text": "PLANTASJEN", "ink": (0.86, 0.08, 0.14), "tall": 1.6, "up": 3.4})
+SITES.append({"kind": "glasshouse", "osm_id": 370156903, "span": 6.4})
+# Mekvegen, Kvam: the shop is gone; a gravel car park where it stood.
+DROP_WAYS += [492410579]
+GRAVEL_AREAS = [[(-3234.5, 149.5), (-3207.5, 149.0), (-3207.0, 184.6), (-3225.6, 185.0), (-3226.0, 163.0), (-3234.3, 163.0)]]
+# Bergvegen: a drive of asphalt up the east side of the house from the road, and three parking places along its south wall.
+ASPHALT_AREAS = [[(-1131.6, 265.0), (-1128.4, 264.6), (-1127.6, 236.0), (-1131.2, 235.4), (-1133.2, 250.0)],
+                 [(-1144.8, 245.9), (-1134.1, 249.4), (-1135.9, 255.0), (-1146.6, 251.5)]]
+ASPHALT_POCKETS += [(1223.1, -18.0, 30)]                                          # Moldegård
+# Ground that is level, not the slope the laser model has: (outline, the level or None for the middle height there, how far the bank round it runs).
+LEVEL_SITES = [
+    ([(-2495.9, 66.2), (-2536.9, 67.1), (-2540.1, 66.8), (-2540.4, 62.7), (-2574.2, 62.8), (-2579.7, 51.8), (-2563.4, 34.5), (-2499.2, 49.2)], 53.6, 3),   # Stenrud: "this is not a slope, make the parking lot flat"
+    ([(-1209.6, 177.8), (-1207.9, 159.5), (-1231.2, 157.3), (-1233.0, 175.5)], None, 4),      # Solheimvegen: a building on a slope of nine metres stood as a tower at its lower end
+]
+# Walls the map does not have: (kind, the line).
+WALLS = [("retaining_wall", [(769.3, -259.3), (775.2, -257.4)]), ("retaining_wall", [(785.2, -254.2), (790.2, -252.5)])]     # Lingedalsvegen: concrete between the two levels, either side of the small building
+# Lingedalsvegen, west of Roseby: Roseby Nord is in the map, but a service road is drawn through it, and a building
+# that lies mostly in a road is taken out. These stay whole whatever is drawn through them.
+KEEP_BUILDINGS = {401877342}
+NO_TREES_IN += [(-3221.0, 167.0, 20.0)]                                           # the gravel car park on Mekvegen
+# Træffhuset: the stand lies in the corner west of the hall, not along its wall (it ran into the hall), five rows of it.
+STANDS[0].update({"shift": 23.5, "rows": 5})
+
+# ---- notes of 21 November, 04:10
+BUILDINGS[297520245] = {"name": "Brunvoll", "wall": (150, 152, 154)}              # Ytre Årø: grey (written into world/buildings.json by hand as well; the next build gives the same)

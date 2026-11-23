@@ -25,11 +25,43 @@ const SOLID := {
 	RETAINING: Vector2(1.6, 0.2), GUARD_RAIL: Vector2(0.75, 0.06),
 }
 
+const Boats := preload("res://scripts/boats.gd")
+const Airliner := preload("res://scripts/plane.gd")
+const BOAT_KINDS := 1000             # a group's number for the boats of one kind: this and the kind's own number
+
 var world
 var cells := {}                # 100 m cell -> [[kind, Transform3D], ...]
 
 
+var airliners: Array = []              # where the airliners stand: [place, yaw]
 var parked := {}                         # 100 m square -> [[where it stands, colour, its MultiMesh, its number there, its place in that], ...]
+
+
+var _boats_laid := []                    # [bow, stern, half beam] of every boat laid so far
+var _pier_segs := []
+var _pier_read := false
+
+
+## Every stretch of every pier and breakwater: [from, to, half its width].
+func _pier_edges() -> Array:
+	if not _pier_read:
+		_pier_read = true
+		for pr in world.meta.get("piers", []):
+			var flat: Array = pr["pts"]
+			var half := 0.0 if pr["closed"] else (3.5 if pr["kind"] == "breakwater" else 2.2)
+			var count := flat.size() / 2
+			for k in (count if pr["closed"] else count - 1):
+				var k2 := (k + 1) % count
+				_pier_segs.append([Vector2(flat[2 * k], flat[2 * k + 1]), Vector2(flat[2 * k2], flat[2 * k2 + 1]), half])
+	return _pier_segs
+
+
+## The shortest distance between two stretches on the ground.
+func _seg_dist(a: Vector2, b: Vector2, c: Vector2, d: Vector2) -> float:
+	if Geometry2D.segment_intersects_segment(a, b, c, d) != null:
+		return 0.0
+	return minf(minf(a.distance_to(Geometry2D.get_closest_point_to_segment(a, c, d)), b.distance_to(Geometry2D.get_closest_point_to_segment(b, c, d))),
+		minf(c.distance_to(Geometry2D.get_closest_point_to_segment(c, a, b)), d.distance_to(Geometry2D.get_closest_point_to_segment(d, a, b))))
 
 
 func build(w) -> void:
@@ -44,6 +76,9 @@ func build(w) -> void:
 		if not meshes.has(kind):
 			continue
 		var pos := Vector3(data[o + 1], data[o + 2], data[o + 3])
+		if kind == AIRLINER:
+			airliners.append([pos, data[o + 4]])        # (these can be flown: scripts/main.gd stands an aeroplane at each)
+			continue
 		var xf: Transform3D
 		var col := Color.WHITE
 		if kind in LINEAR:
@@ -62,7 +97,44 @@ func build(w) -> void:
 				col = CAR_PAINT[int(data[o + 6]) % CAR_PAINT.size()]
 				if kind == BOAT:
 					col = col.lerp(Color.WHITE, 0.6)
-		var gk := Vector3i(int(floor(pos.x / CHUNK)), int(floor(pos.z / CHUNK)), kind)
+					# The map lays every boat 5.2 m from the middle of its pier, bow to the pier, whatever its length;
+					# the pier is 2.2 m to its edge. A long boat is moved out along its own length until its bow lies
+					# off the pier ("the boats are clipping into the harbour piers", 20 Nov).
+					# (Measured from the boat's own point, which is not its middle: every hull is built with its stem 4 m and
+					# more ahead of that point, whatever its length. Taking the point for the middle left the bows of the
+					# larger boats in the pier still: "some of the boats are still clipping into the pier", 21 Nov.)
+					var kind_name: String = Boats.KINDS[int(data[o + 6]) % 8]
+					var fore: float = float(Boats.FORE[kind_name]) * s + 0.1
+					var back: float = maxf(float(Boats.LENGTHS[kind_name]) - 4.0, 0.3) * s + 0.2
+					var reach := (fore + back) * 0.5
+					var out := maxf(0.0, 2.2 + 0.7 + fore - 5.2)
+					var aft := xf.basis.z.normalized()
+					pos += aft * out
+					xf.origin = pos
+					# and one that would still lie in a pier (where the pier bends, or another runs close by) or in a
+					# boat already there is left out
+					# (its middle line from the tip of the bow, and from a third of the way back its full beam)
+					var bow := Vector2(pos.x, pos.z) - Vector2(aft.x, aft.z) * fore
+					var stern := Vector2(pos.x, pos.z) + Vector2(aft.x, aft.z) * back
+					var waist := bow.lerp(stern, 0.35)
+					var wide := 0.38 * (reach - 0.35)
+					var fits := true
+					for seg in _pier_edges():
+						if _seg_dist(bow, stern, seg[0], seg[1]) < float(seg[2]) + 0.5 or _seg_dist(waist, stern, seg[0], seg[1]) < float(seg[2]) + wide + 0.5:
+							fits = false
+							break
+					for other in _boats_laid:
+						if _seg_dist(bow, stern, other[0], other[1]) < wide + float(other[2]) + 0.3:
+							fits = false
+							break
+					if not fits:
+						continue
+					_boats_laid.append([bow, stern, wide])
+		if not (kind in LINEAR):
+			xf = _seat(kind, xf)
+			pos = xf.origin
+		# (a boat is one of eight kinds, by the number the map gives it: scripts/boats.gd. Each kind is drawn by itself.)
+		var gk := Vector3i(int(floor(pos.x / CHUNK)), int(floor(pos.z / CHUNK)), kind if kind != BOAT else BOAT_KINDS + int(data[o + 6]) % 8)
 		if not groups.has(gk):
 			groups[gk] = []
 		groups[gk].append([xf, col])
@@ -83,21 +155,34 @@ func build(w) -> void:
 		var at := Transform3D(Basis(Vector3.UP, sign[3]), Vector3(sign[0], sign[1], sign[2]))
 		_name_plate(plate, sign[4], at * Transform3D(Basis(Vector3.UP, PI * 0.5), Vector3(0, 2.68, 0)))
 		_name_plate(plate, sign[5], at * Transform3D(Basis(), Vector3(0, 2.40, 0)))
+	_signs()
+	if not plinths.is_empty():
+		# the concrete a shelter or a set of swings stands on where the ground slopes under it
+		var block := BoxMesh.new()
+		var cm := StandardMaterial3D.new()
+		cm.albedo_color = Color(0.62, 0.62, 0.60)
+		cm.roughness = 0.9
+		block.material = cm
+		var pm := MultiMesh.new()
+		pm.transform_format = MultiMesh.TRANSFORM_3D
+		pm.mesh = block
+		pm.instance_count = plinths.size()
+		for j in plinths.size():
+			pm.set_instance_transform(j, plinths[j])
+		var pmi := MultiMeshInstance3D.new()
+		pmi.multimesh = pm
+		pmi.visibility_range_end = RANGE
+		add_child(pmi)
 	for gk in groups:
 		var list: Array = groups[gk]
 		var origin := Vector3((gk.x + 0.5) * CHUNK, 0.0, (gk.y + 0.5) * CHUNK)
 		origin.y = world.coarse_at(origin.x, origin.z)
 		var mm := MultiMesh.new()
 		mm.transform_format = MultiMesh.TRANSFORM_3D
-		mm.use_colors = gk.z == CAR or gk.z == BOAT
-		mm.mesh = meshes[gk.z]
+		mm.use_colors = gk.z == CAR or gk.z >= BOAT_KINDS
+		mm.mesh = meshes[gk.z] if gk.z < BOAT_KINDS else Boats.meshes(Boats.KINDS[gk.z - BOAT_KINDS])[0]
 		mm.instance_count = list.size()
 		for j in list.size():
-			if gk.z == CAR and world.detail != null:
-				# a parked car stands on the paving, not in it: its tyres on the asphalt or on the slabs (note of 18 Nov)
-				var top: float = world.detail.top_at(list[j][0].origin.x, list[j][0].origin.z)
-				if not is_nan(top):
-					list[j][0].origin.y = top
 			var xf: Transform3D = list[j][0]
 			xf.origin -= origin
 			mm.set_instance_transform(j, xf)
@@ -114,9 +199,142 @@ func build(w) -> void:
 		mmi.position = origin
 		mmi.visibility_range_end = 4000.0 if gk.z in [FERRY, AIRLINER, CRUISE] else (1400.0 if gk.z in [PYLON, WIRES, BOAT] else RANGE)
 		mmi.visibility_range_end_margin = 40.0
+		if gk.z >= BOAT_KINDS:
+			# a boat in full out to 180 m, and from there to 1400 m the same boat built coarsely
+			mmi.visibility_range_end = 180.0
+			mmi.visibility_range_end_margin = 15.0
+			var far_mm := mm.duplicate() as MultiMesh
+			far_mm.mesh = Boats.meshes(Boats.KINDS[gk.z - BOAT_KINDS])[1]
+			var far := MultiMeshInstance3D.new()
+			far.multimesh = far_mm
+			far.position = origin
+			far.visibility_range_begin = 180.0
+			far.visibility_range_begin_margin = 15.0
+			far.visibility_range_end = 1400.0
+			far.visibility_range_end_margin = 40.0
+			far.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			add_child(far)
 		if gk.z in [WIRES, FENCE, PICKET, GUARD_RAIL]:
 			mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(mmi)
+
+
+## The road signs of world/signs.json (tools/build_map.py: the signs of the national road database, each where it
+## stands). All the plates and poles of a 320 m square are one mesh; a plate is a square cut from the picture
+## world/textures/signs.png (tools/sign_faces.py), grey from behind. What a plate says in words is lettered on it.
+func _signs() -> void:
+	if not FileAccess.file_exists(Paths.world + "signs.json") or not FileAccess.file_exists(Paths.world + "textures/signs.png"):
+		return
+	var list = JSON.parse_string(FileAccess.get_file_as_string(Paths.world + "signs.json"))
+	if list == null or list.is_empty():
+		return
+	var grid: Array = world.meta.get("sign_grid", [8, 8])
+	var cols := int(grid[0])
+	var rows := int(grid[1])
+	var img := Image.new()
+	img.load_png_from_buffer(FileAccess.get_file_as_bytes(Paths.world + "textures/signs.png"))
+	img.generate_mipmaps()
+	var sh := Shader.new()
+	sh.code = """shader_type spatial;
+render_mode cull_disabled;
+uniform sampler2D faces : source_color, filter_linear_mipmap_anisotropic, repeat_disable;
+void fragment() {
+	vec4 c = texture(faces, UV);
+	if (c.a < 0.5) discard;
+	ALBEDO = FRONT_FACING ? c.rgb : vec3(0.40, 0.41, 0.43);
+	ROUGHNESS = 0.55;
+	if (!FRONT_FACING) NORMAL = -NORMAL;
+}"""
+	var mat := ShaderMaterial.new()
+	mat.shader = sh
+	mat.set_shader_parameter("faces", ImageTexture.create_from_image(img))
+	var grey := Vector2(0.5 / float(cols), 0.5 / float(rows))        # the middle of the first square: plain grey
+	var tools := {}                                                  # 320 m square -> [SurfaceTool, its origin]
+	for post in list:
+		var x: float = post[0]
+		var z: float = post[1]
+		var foot: Vector3 = _seat(GIVE_WAY, Transform3D(Basis(), Vector3(x, world.height_at(x, z), z))).origin
+		var ck := Vector2i(int(floor(x / CHUNK)), int(floor(z / CHUNK)))
+		if not tools.has(ck):
+			var st0 := SurfaceTool.new()
+			st0.begin(Mesh.PRIMITIVE_TRIANGLES)
+			var o := Vector3((ck.x + 0.5) * CHUNK, 0.0, (ck.y + 0.5) * CHUNK)
+			o.y = world.coarse_at(o.x, o.z)
+			tools[ck] = [st0, o]
+		var st: SurfaceTool = tools[ck][0]
+		var origin: Vector3 = tools[ck][1]
+		var tall: float = post[2]
+		var away := 0.09                                             # how far in front of the middle of its post a plate hangs
+		if tall > 0.0:
+			away = 0.045
+			var r := 0.03
+			var top := foot + Vector3(0, tall, 0)
+			for k in 4:
+				var a0 := Vector3(r, 0, 0).rotated(Vector3.UP, PI * 0.5 * float(k) + PI * 0.25)
+				var a1 := Vector3(r, 0, 0).rotated(Vector3.UP, PI * 0.5 * float(k + 1) + PI * 0.25)
+				_sign_quad(st, top + a0 - origin, top + a1 - origin, foot + a1 - origin, foot + a0 - origin, (a0 + a1).normalized(), grey, grey, grey, grey)
+			var hk := Vector2i(int(floor(x / 100.0)), int(floor(z / 100.0)))
+			if not cells.has(hk):
+				cells[hk] = []
+			cells[hk].append([GIVE_WAY, Transform3D(Basis(), foot)])
+		for pl in post[3]:
+			var cell := int(pl[0])
+			var yaw: float = pl[1]
+			var w: float = pl[3]
+			var h: float = pl[4]
+			var nrm := Basis(Vector3.UP, yaw) * Vector3(0, 0, -1)
+			var right := (-nrm).cross(Vector3.UP)                    # to the right of someone reading it
+			var mid := foot + Vector3(0, float(pl[2]), 0) + nrm * away
+			var u0 := (float(cell % cols) + 0.01) / float(cols)
+			var u1 := (float(cell % cols) + 0.99) / float(cols)
+			var v0 := (float(cell / cols) + 0.01) / float(rows)
+			var v1 := (float(cell / cols) + 0.99) / float(rows)
+			var tl := mid - right * (w * 0.5) + Vector3(0, h * 0.5, 0) - origin
+			var tr := mid + right * (w * 0.5) + Vector3(0, h * 0.5, 0) - origin
+			var br := mid + right * (w * 0.5) - Vector3(0, h * 0.5, 0) - origin
+			var bl := mid - right * (w * 0.5) - Vector3(0, h * 0.5, 0) - origin
+			_sign_quad(st, tl, tr, br, bl, nrm, Vector2(u0, v0), Vector2(u1, v0), Vector2(u1, v1), Vector2(u0, v1))
+			var text: String = pl[5]
+			if text != "":
+				var px: float = pl[7]
+				var longest := 1
+				for line in text.split("\n"):
+					longest = maxi(longest, line.length())
+				var room: float = w - 0.07 - 2.0 * absf(float(pl[8]))
+				px = minf(px, room / (float(longest) * 36.0))
+				var label := Label3D.new()
+				label.text = text
+				label.font_size = 64
+				label.pixel_size = px
+				label.modulate = Color(0.96, 0.96, 0.96) if int(pl[6]) == 1 else Color(0.05, 0.05, 0.06)
+				label.outline_size = 0
+				label.double_sided = false
+				label.transform = Transform3D(Basis(Vector3.UP, yaw + PI), mid + nrm * 0.012 + right * float(pl[8]))
+				label.visibility_range_end = 55.0
+				add_child(label)
+	for ck in tools:
+		var mi := MeshInstance3D.new()
+		mi.mesh = tools[ck][0].commit()
+		mi.material_override = mat
+		mi.position = tools[ck][1]
+		mi.visibility_range_end = RANGE
+		mi.visibility_range_end_margin = 40.0
+		add_child(mi)
+
+
+## A flat piece of a sign, seen from the side `nrm` points to (a, b, c, d go round it; ua to ud are their places in the picture).
+func _sign_quad(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3, nrm: Vector3, ua: Vector2, ub: Vector2, uc: Vector2, ud: Vector2) -> void:
+	if (b - a).cross(c - a).dot(nrm) > 0.0:                         # (the front of a triangle is the side it runs clockwise from)
+		var t := b
+		b = d
+		d = t
+		var tu := ub
+		ub = ud
+		ud = tu
+	for q in [[a, ua], [b, ub], [c, uc], [a, ua], [c, uc], [d, ud]]:
+		st.set_normal(nrm)
+		st.set_uv(q[1])
+		st.add_vertex(q[0])
 
 
 ## One plate of a street-name sign, hanging from the pole at the origin of `xf` and running along its X:
@@ -189,6 +407,73 @@ func solid(parent: Node3D, key: Vector2i) -> void:
 
 
 # ------------------------------------------------------------------ models
+## The top of what is seen at a point: the paving where there is some (asphalt, slabs), else the ground.
+func _top(x: float, z: float) -> float:
+	if world.detail != null:
+		var t: float = world.detail.top_at(x, z)
+		if not is_nan(t):
+			return t
+	return world.height_at(x, z)
+
+
+const LEVEL := [SHELTER, SWINGS]                             # these stand level, on concrete where the ground slopes
+const LIE := [CAR, BENCH, PICNIC, AIRLINER, VIEWPOINT]       # these lie the way the ground under them lies
+var plinths: Array = []
+var on_plinth := {}                                          # where a thing stands on one (for the --standing check)
+
+## Stand a thing on what is under it (the map gives one height, at its middle; a thing some metres wide on a
+## slope then hangs in the air at one end and is buried at the other: note of 19 Nov). A car, a bench, a table lie
+## the way the ground lies under their four corners. A shelter or swings stand level, at most 30 cm over their lowest corner
+## with concrete under that, and cut into the bank behind. A pylon stands level at its lowest corner, legs in the ground. A post stands on the
+## paving at its foot.
+func _seat(kind: int, xf: Transform3D) -> Transform3D:
+	if not SOLID.has(kind) or kind in [BOAT, FERRY, CRUISE]:
+		return xf
+	var at := xf.origin
+	if not (kind in LEVEL or kind in LIE or kind == PYLON):
+		var y := _top(at.x, at.z)
+		var r: float = maxf(maxf(SOLID[kind].x, SOLID[kind].z) * xf.basis.get_scale().x, 0.15)
+		for c in [Vector2(-r, -r), Vector2(r, -r), Vector2(-r, r), Vector2(r, r)]:       # at a kerb: on the lower side of it
+			y = minf(y, _top(at.x + c.x, at.z + c.y))
+		xf.origin.y = y
+		return xf
+	var s := xf.basis.get_scale().x
+	var bx := xf.basis.x.normalized()
+	var bz := xf.basis.z.normalized()
+	var hx: float = maxf(SOLID[kind].x * s, 0.45)
+	var hz: float = maxf(SOLID[kind].z * s, 0.45)
+	if kind == CAR:
+		hx *= 0.85            # the wheels, not the bumpers
+		hz *= 0.65
+	var g: Array = []         # the ground under the corners: -x-z, +x-z, -x+z, +x+z
+	for c in [Vector2(-1, -1), Vector2(1, -1), Vector2(-1, 1), Vector2(1, 1)]:
+		var q: Vector3 = at + bx * hx * c.x + bz * hz * c.y
+		g.append(_top(q.x, q.z))
+	var hi: float = maxf(maxf(g[0], g[1]), maxf(g[2], g[3]))
+	var lo: float = minf(minf(g[0], g[1]), minf(g[2], g[3]))
+	if kind == PYLON:
+		xf.origin.y = lo
+		return xf
+	if kind in LEVEL:
+		hi = minf(maxf(hi, _top(at.x, at.z)), lo + 0.30)       # on a steep bank it is cut into the bank, not raised on a block
+		xf.origin.y = hi
+		if hi - lo > 0.10:
+			var tall := hi - lo + 0.4
+			plinths.append(Transform3D(Basis(bx, Vector3.UP, bz).scaled(Vector3(hx * 2.0 + 0.3, tall, hz * 2.0 + 0.3)), Vector3(at.x, hi - tall * 0.5 - 0.02, at.z)))
+			on_plinth[Vector2i(int(round(at.x)), int(round(at.z)))] = true
+		return xf
+	var lim := 0.40 if kind == CAR else 0.22
+	var sx := clampf((float(g[1]) + float(g[3]) - float(g[0]) - float(g[2])) / (4.0 * hx), -lim, lim)
+	var sz := clampf((float(g[2]) + float(g[3]) - float(g[0]) - float(g[1])) / (4.0 * hz), -lim, lim)
+	var nx := (bx + Vector3.UP * sx).normalized()
+	var nz := (bz + Vector3.UP * sz).normalized()
+	var ny := nz.cross(nx).normalized()
+	nz = nx.cross(ny).normalized()
+	xf.basis = Basis(nx, ny, nz).scaled(Vector3(s, s, s))
+	xf.origin.y = (float(g[0]) + float(g[1]) + float(g[2]) + float(g[3])) * 0.25
+	return xf
+
+
 func _box(size: Vector3, pos: Vector3, col: Color, basis := Basis()) -> Array:
 	var b := BoxMesh.new()
 	b.size = size
@@ -360,18 +645,7 @@ func _meshes() -> Dictionary:
 		_box(Vector3(0.34, 0.06, 0.14), Vector3(0, 0.85, 0), granite)])
 	var wing := Color(0.86, 0.87, 0.89)
 	var along := Basis(Vector3.RIGHT, PI * 0.5)
-	out[AIRLINER] = world._merge([
-		_cyl(1.9, 1.9, 28.0, 10, Vector3(0, 3.6, 0), hull_white, along),
-		_cyl(1.9, 0.3, 4.5, 10, Vector3(0, 3.6, -16.2), hull_white, along),
-		_cyl(0.5, 1.9, 6.5, 10, Vector3(0, 4.0, 17.2), hull_white, along),
-		_box(Vector3(32.0, 0.35, 4.2), Vector3(0, 3.0, 0.5), wing),
-		_box(Vector3(11.0, 0.25, 2.6), Vector3(0, 4.4, 18.5), wing),
-		_box(Vector3(0.3, 5.2, 4.0), Vector3(0, 7.0, 18.2), Color(0.70, 0.08, 0.10)),
-		_cyl(0.9, 0.9, 3.6, 8, Vector3(-5.5, 2.2, -0.8), Color(0.35, 0.36, 0.38), along),
-		_cyl(0.9, 0.9, 3.6, 8, Vector3(5.5, 2.2, -0.8), Color(0.35, 0.36, 0.38), along),
-		_cyl(0.12, 0.12, 2.0, 5, Vector3(0, 1.0, -11.0), dark),
-		_cyl(0.14, 0.14, 2.0, 5, Vector3(-2.6, 1.0, 1.5), dark),
-		_cyl(0.14, 0.14, 2.0, 5, Vector3(2.6, 1.0, 1.5), dark)])
+	out[AIRLINER] = Airliner.build()                    # scripts/plane.gd
 	var rail := [
 		_box(Vector3(4.0, 0.06, 0.06), Vector3(0, 1.05, 0), steel),
 		_box(Vector3(4.0, 0.05, 0.05), Vector3(0, 0.55, 0), steel),
@@ -389,9 +663,13 @@ func _meshes() -> Dictionary:
 ## the bridge on top with windows all round, the mast with its radars and lights, a funnel each side, fenders
 ## along the hull, cars on the deck. Over three hundred parts (it was seven boxes: note of 18 Nov).
 func _ferry_parts() -> Array:
-	var navy := Color(0.07, 0.13, 0.28)
-	var white := Color(0.94, 0.94, 0.92)
-	var red := Color(0.72, 0.10, 0.08)
+	# (the colours of the ferries on Moldefjorden, after a photograph of MF Tresfjord: a black hull, a cream-white
+	# house, ochre funnels with a black top, the company's red mark on the side; note of 21 Nov)
+	var navy := Color(0.045, 0.045, 0.05)
+	var white := Color(0.95, 0.94, 0.88)
+	var red := Color(0.55, 0.09, 0.07)
+	var ochre := Color(0.88, 0.60, 0.14)
+	var mark := Color(0.80, 0.08, 0.10)
 	var glass := Color(0.09, 0.13, 0.17)
 	var deck := Color(0.30, 0.32, 0.33)
 	var steel := Color(0.55, 0.57, 0.60)
@@ -411,11 +689,13 @@ func _ferry_parts() -> Array:
 			p.append(_box(Vector3(w + 0.1, 0.5, 2.4), Vector3(0, 0.15, z), red))
 			p.append(_box(Vector3(w + 0.15, 0.22, 2.4), Vector3(0, 3.45, z), white))
 		# the ramp, lifted a little, with its side plates, its hoist posts and their stays
-		p.append(_box(Vector3(8.6, 0.30, 7.5), Vector3(0, 5.1, 37.6 * en), deck, Basis(Vector3.RIGHT, 0.42 * en)))
+		# (hinged at the end of the car deck, its outer end up: it was laid the other way, its hinge in the air and its
+		# tip down toward the water: "the front gate on the ferry seems to be flipped", 20 Nov)
+		p.append(_box(Vector3(8.6, 0.30, 7.5), Vector3(0, 5.43, 37.42 * en), deck, Basis(Vector3.RIGHT, -0.42 * en)))
 		for sx in [-4.4, 4.4]:
-			p.append(_box(Vector3(0.25, 0.9, 7.5), Vector3(sx, 5.5, 37.6 * en), red, Basis(Vector3.RIGHT, 0.42 * en)))
+			p.append(_box(Vector3(0.25, 0.9, 7.5), Vector3(sx, 5.83, 37.42 * en), navy, Basis(Vector3.RIGHT, -0.42 * en)))
 			p.append(_box(Vector3(0.45, 6.5, 0.45), Vector3(sx * 1.25, 6.9, 32.4 * en), white))
-			p.append(_cyl(0.05, 0.05, 6.4, 5, Vector3(sx * 1.12, 8.3, 35.2 * en), black, Basis(Vector3.RIGHT, (PI * 0.5 - 0.55) * en)))
+			p.append(_cyl(0.05, 0.05, 8.8, 5, Vector3(sx * 1.12, 8.7, 36.5 * en), black, Basis(Vector3.RIGHT, -1.196 * en)))
 			p.append(_box(Vector3(0.5, 0.5, 0.5), Vector3(sx * 1.25, 10.3, 32.4 * en), orange))
 		p.append(_box(Vector3(11.4, 0.4, 0.4), Vector3(0, 10.1, 32.4 * en), white))
 		# bollards and a winch on the fore deck, the anchor in its pocket
@@ -447,8 +727,9 @@ func _ferry_parts() -> Array:
 		for k in 10:
 			p.append(_cyl(0.22, 0.22, 0.06, 8, Vector3(8.03 * sx3, 2.3, -22.5 + 5.0 * float(k)), glass, Basis(Vector3.BACK, PI * 0.5)))
 		# the company's colours on the side: a red and a blue slanting bar
-		p.append(_box(Vector3(0.06, 2.2, 1.0), Vector3(8.03 * sx3, 6.3, -24.2), red, Basis(Vector3.RIGHT, 0.35)))
-		p.append(_box(Vector3(0.06, 2.2, 1.0), Vector3(8.03 * sx3, 6.3, -22.9), Color(0.10, 0.30, 0.65), Basis(Vector3.RIGHT, 0.35)))
+		p.append(_box(Vector3(0.06, 0.34, 2.6), Vector3(8.03 * sx3, 7.55, -22.6), mark, Basis(Vector3.RIGHT, 0.10)))            # the red stroke of the company's name
+		p.append(_box(Vector3(0.06, 0.60, 3.4), Vector3(8.03 * sx3, 6.95, -23.0), Color(0.10, 0.14, 0.30)))                     # and the name under it, as a dark block
+		p.append(_box(Vector3(0.06, 0.30, 4.2), Vector3(8.03 * sx3, 7.9, 4.0), Color(0.12, 0.12, 0.13)))                        # the ship's name amidships
 	# the saloon deck over the cars: its floor is the car deck's roof; windows all the way along, and across the ends
 	p.append(_box(Vector3(16.0, 0.35, 52.0), Vector3(0, 8.55, 0), white))
 	p.append(_box(Vector3(15.4, 2.7, 42.0), Vector3(0, 10.1, 0), white))
@@ -500,13 +781,12 @@ func _ferry_parts() -> Array:
 			p.append(_box(Vector3(0.22, 2.6, 0.22), Vector3(5.2 * sx5, 13.0, dz), white))
 			p.append(_box(Vector3(1.9, 0.22, 0.22), Vector3(6.05 * sx5, 14.25, dz), white))
 			p.append(_box(Vector3(0.04, 0.9, 0.04), Vector3(6.8 * sx5, 13.8, dz), black))
-		# a funnel each side: white, with the red and blue bands and a black top, the pipes standing out of it
-		p.append(_box(Vector3(1.7, 4.4, 3.4), Vector3(6.3 * sx5, 13.85, 6.0), white))
-		p.append(_box(Vector3(1.75, 0.7, 3.45), Vector3(6.3 * sx5, 14.6, 6.0), red))
-		p.append(_box(Vector3(1.75, 0.5, 3.45), Vector3(6.3 * sx5, 15.25, 6.0), Color(0.10, 0.30, 0.65)))
-		p.append(_box(Vector3(1.75, 0.35, 3.45), Vector3(6.3 * sx5, 15.9, 6.0), black))
+		# a funnel each side: ochre on a white foot, with a black top, the pipes standing out of it
+		p.append(_box(Vector3(1.7, 1.6, 3.4), Vector3(6.3 * sx5, 12.45, 6.0), white))
+		p.append(_box(Vector3(1.75, 3.6, 3.45), Vector3(6.3 * sx5, 15.0, 6.0), ochre))
+		p.append(_box(Vector3(1.80, 0.9, 3.50), Vector3(6.3 * sx5, 17.2, 6.0), black))
 		for dz2 in [5.2, 6.8]:
-			p.append(_cyl(0.20, 0.20, 0.9, 8, Vector3(6.3 * sx5, 16.4, dz2), black))
+			p.append(_cyl(0.20, 0.20, 0.9, 8, Vector3(6.3 * sx5, 17.9, dz2), black))
 		for k in 5:
 			p.append(_box(Vector3(0.05, 0.12, 2.6), Vector3(7.16 * sx5, 12.4 + 0.3 * float(k), 6.0), steel))         # louvres
 		# a ventilator and a deck locker
@@ -599,9 +879,11 @@ func _cruise_parts() -> Array:
 		p.append(_box(Vector3(0.08, 2.2, 3.2), Vector3(12.05 * sx, 2.4, 20.0), Color(0.16, 0.18, 0.24)))          # a shell door for the tenders
 		p.append(_box(Vector3(0.08, 2.2, 3.2), Vector3(12.05 * sx, 2.4, -20.0), Color(0.16, 0.18, 0.24)))
 	# the decks: seven, each a little shorter and narrower than the one under it
-	for d in 7:
+	# (eight, and their fronts stepping back by less: with seven the top deck, the bridge and the funnel, which stand
+	# at 31 m, hung three metres over the highest roof: "the roof of the cruise boat is dislocated", 20 Nov)
+	for d in 8:
 		var inset := float(d) * 0.35
-		var front := -74.0 + float(d) * 3.2
+		var front := -74.0 + float(d) * 1.6
 		var rear := 82.0 - float(d) * 4.0
 		var y := 8.5 + float(d) * 3.0
 		var half_w := (23.6 - inset * 2.0) * 0.5
@@ -613,7 +895,7 @@ func _cruise_parts() -> Array:
 			var cabins := int((rear - front - 5.0) / 3.4)
 			for k in cabins + 1:                                                                               # a white divider between each two cabins
 				p.append(_box(Vector3(0.5, 2.0, 0.10), Vector3((half_w + 0.22) * sx2, y + 0.3, front + 2.5 + 3.4 * float(k)), white))
-			if d >= 1 and d <= 5:                                                                              # balconies: a glass front along the deck's edge
+			if d >= 1 and d <= 6:                                                                              # balconies: a glass front along the deck's edge
 				p.append(_box(Vector3(0.05, 0.95, rear - front - 5.0), Vector3((half_w + 0.46) * sx2, y - 0.95, (front + rear) * 0.5), Color(0.55, 0.68, 0.75)))
 				p.append(_box(Vector3(0.07, 0.06, rear - front - 5.0), Vector3((half_w + 0.46) * sx2, y - 0.45, (front + rear) * 0.5), steel))
 		# the front of each deck: windows looking ahead; the back: an open terrace with a rail
@@ -635,7 +917,7 @@ func _cruise_parts() -> Array:
 			var bz := -42.0 + 13.0 * float(k)
 			p.append(_box(Vector3(3.0, 1.9, 9.2), Vector3(13.0 * sx3, 13.3, bz), orange))
 			p.append(_box(Vector3(3.1, 0.9, 8.6), Vector3(13.0 * sx3, 14.6, bz), white))
-			p.append(_box(Vector3(0.06, 0.5, 6.0), Vector3(14.52 * sx3, 14.6, bz), glass))
+			p.append(_box(Vector3(0.06, 0.5, 6.0), Vector3(14.56 * sx3, 14.6, bz), glass))                    # (clear of the cover's own side: lying in it, it flickered)
 			p.append(_cyl(0.0, 1.5, 1.6, 4, Vector3(13.0 * sx3, 13.3, bz - 5.4), orange, Basis(Vector3.RIGHT, -PI * 0.5) * Basis(Vector3.UP, PI * 0.25)))
 			for dz in [-3.6, 3.6]:
 				p.append(_box(Vector3(0.35, 3.4, 0.35), Vector3(11.9 * sx3, 14.6, bz + float(dz)), white))

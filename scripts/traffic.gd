@@ -34,6 +34,10 @@ var _stations: Array = []                # for each road: the distances along it
 var _links := {}                         # Vector2i(road, station number) -> [Vector2i(road, station number), ...]: where one can cross over
 var _models: Array = []               # the car models: {body, wheel (meshes), track, wheel_r, axle_f, axle_r, wb, paints}
 const BusModel := preload("res://scripts/bus.gd")
+const Truck := preload("res://scripts/truck.gd")
+var _n_cars := 0                        # how many of _models are cars; the rest are lorries (scripts/truck.gd)
+var _depot: Array = []                   # buses and lorries standing parked: {kind, paint, at, fwd, node, fine}
+var _depot_in := 0.0
 var _rng := RandomNumberGenerator.new()
 var _spawn_in := 0.0
 var _bodies: Array = []
@@ -94,6 +98,7 @@ func setup(w, p, d) -> void:
 		add_child(body)
 		_bodies.append(body)
 	_setup_buses()
+	_setup_depot()
 	_setup_boats()
 	if not _runway.is_empty():
 		_plane = MeshInstance3D.new()
@@ -288,7 +293,8 @@ func _run(delta: float) -> void:
 		for o in lanes[Vector2i(c["w"], c["dir"])]:
 			var gap: float = (o["s"] - c["s"]) * c["dir"]
 			if o != c and gap > 0.0 and gap < 9.0 + c["v"] * 1.4:
-				top = minf(top, maxf(0.0, (gap - 6.5) * 0.9))
+				var room := 6.5 + (2.2 if int(c["model"]) >= _n_cars else 0.0) + (2.2 if int(o["model"]) >= _n_cars else 0.0)      # (a lorry is longer)
+				top = minf(top, maxf(0.0, (gap - room) * 0.9))
 		# the player, on foot or in something, in the way ahead
 		var rel := here - p
 		var front := rel.dot(fwd)
@@ -391,6 +397,7 @@ func _run(delta: float) -> void:
 			_bodies[k].position = Vector3(0, -500, 0)
 	var tq351 := Time.get_ticks_usec()
 	_run_parked(delta, pp)
+	_run_depot(delta, pp)
 	world.took("t_parked", tq351)
 	var tq352 := Time.get_ticks_usec()
 	_run_buses(delta, here, pp)
@@ -434,7 +441,7 @@ func _run_parked(delta: float, pp: Vector3) -> void:
 		if _parked_shown.has(key):
 			continue
 		var e: Array = want[k][2]
-		var c := {"model": posmod(hash(key), _models.size()), "col": e[1]}
+		var c := {"model": posmod(hash(key), _n_cars), "col": e[1]}
 		var tq389 := Time.get_ticks_usec()
 		_show(c)
 		world.took("t_show", tq389)
@@ -468,6 +475,114 @@ func _run_parked(delta: float, pp: Vector3) -> void:
 			_forget(_parked_shown[key]["car"])
 			(rec[2] as MultiMesh).set_instance_transform(rec[3], rec[4])
 			_parked_shown.erase(key)
+	_run_parked_mid(pp)
+
+
+## Between the car stood in close by and the box seen from afar there was nothing, and a box turned into a car at
+## 90 m ("make the level of detail fading on cars smoother", 21 Nov). Out to 280 m a parked car is now drawn as
+## the body of its own model in its own colour, on plain wheels: the same shape as the car that takes its place
+## close by, so that change is hardly seen, and the box only gives way to it where a car is a few pixels long.
+## One MultiMesh a model, filled again every time with the cars that are within reach.
+var _mid: Array = []                     # per car model: its MultiMesh
+var _mid_boxes := {}                     # where it stands -> the record from scripts/props.gd whose box is put away
+const MID_REACH := 280.0
+const MID_EACH := 96
+
+
+func _mid_mesh(m: Dictionary) -> ArrayMesh:
+	var body: ArrayMesh = m["body"]
+	var mesh := ArrayMesh.new()
+	for sf in body.get_surface_count():
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, body.surface_get_arrays(sf))
+		var mat: Material = body.surface_get_material(sf)
+		if mat is ShaderMaterial and (mat as ShaderMaterial).shader != null and String((mat as ShaderMaterial).shader.resource_path).contains("car_paint"):
+			var paint := StandardMaterial3D.new()                # the paint: the colour of each car, without the door gaps
+			paint.vertex_color_use_as_albedo = true
+			paint.albedo_color = Color.WHITE
+			paint.roughness = 0.32
+			paint.metallic = 0.35
+			mat = paint
+		mesh.surface_set_material(mesh.get_surface_count() - 1, mat)
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var tyre := CylinderMesh.new()
+	tyre.top_radius = m["wheel_r"]
+	tyre.bottom_radius = m["wheel_r"]
+	tyre.height = 0.21
+	tyre.radial_segments = 14
+	tyre.rings = 1
+	var hub := CylinderMesh.new()
+	hub.top_radius = float(m["wheel_r"]) * 0.62
+	hub.bottom_radius = float(m["wheel_r"]) * 0.62
+	hub.height = 0.225
+	hub.radial_segments = 10
+	hub.rings = 1
+	var st2 := SurfaceTool.new()
+	st2.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for z in [float(m["axle_f"]), float(m["axle_r"])]:
+		for sx in [-float(m["track"]), float(m["track"])]:
+			var xf := Transform3D(Basis(Vector3.BACK, PI * 0.5), Vector3(sx, m["wheel_r"], z))
+			st.append_from(tyre, 0, xf)
+			st2.append_from(hub, 0, xf)
+	var rubber := StandardMaterial3D.new()
+	rubber.albedo_color = Color(0.03, 0.03, 0.03)
+	rubber.roughness = 0.95
+	st.set_material(rubber)
+	st.commit(mesh)
+	var alloy := StandardMaterial3D.new()
+	alloy.albedo_color = Color(0.62, 0.63, 0.65)
+	alloy.roughness = 0.35
+	alloy.metallic = 0.7
+	st2.set_material(alloy)
+	st2.commit(mesh)
+	return mesh
+
+
+func _run_parked_mid(pp: Vector3) -> void:
+	if _mid.is_empty():
+		for k in _n_cars:
+			var mm := MultiMesh.new()
+			mm.transform_format = MultiMesh.TRANSFORM_3D
+			mm.use_colors = true
+			mm.mesh = _mid_mesh(_models[k])
+			mm.instance_count = MID_EACH
+			mm.visible_instance_count = 0
+			var mmi := MultiMeshInstance3D.new()
+			mmi.name = "ParkedMid%d" % k
+			mmi.multimesh = mm
+			mmi.custom_aabb = AABB(Vector3(-1e5, -500, -1e5), Vector3(2e5, 2000, 2e5))      # (its cars move about with the player)
+			add_child(mmi)
+			_mid.append(mm)
+	var used := []
+	used.resize(_n_cars)
+	used.fill(0)
+	var now := {}
+	var cell := Vector2i(int(floor(pp.x / 100.0)), int(floor(pp.z / 100.0)))
+	for dz in range(-3, 4):
+		for dx in range(-3, 4):
+			for e in world.props.parked.get(cell + Vector2i(dx, dz), []):
+				var xf: Transform3D = e[0]
+				var d := Vector2(xf.origin.x - pp.x, xf.origin.z - pp.z).length()
+				var key := Vector2i(int(round(xf.origin.x * 10.0)), int(round(xf.origin.z * 10.0)))
+				if d > MID_REACH + (25.0 if _mid_boxes.has(key) else 0.0) or _parked_shown.has(key):
+					continue
+				var model := posmod(hash(key), _n_cars)
+				var n: int = used[model]
+				if n >= MID_EACH:
+					continue
+				var mm2: MultiMesh = _mid[model]
+				mm2.set_instance_transform(n, Transform3D(xf.basis.orthonormalized(), xf.origin))
+				mm2.set_instance_color(n, e[1])
+				used[model] = n + 1
+				now[key] = e
+				(e[2] as MultiMesh).set_instance_transform(e[3], Transform3D(Basis().scaled(Vector3(0.001, 0.001, 0.001)), (e[4] as Transform3D).origin - Vector3(0, 60, 0)))
+	for k in _n_cars:
+		(_mid[k] as MultiMesh).visible_instance_count = used[k]
+	for key in _mid_boxes:
+		if not now.has(key) and not _parked_shown.has(key):
+			var rec: Array = _mid_boxes[key]
+			(rec[2] as MultiMesh).set_instance_transform(rec[3], rec[4])
+	_mid_boxes = now
 
 
 # ------------------------------------------------------------------ the car models
@@ -484,6 +599,10 @@ func _build_models() -> void:
 			"track": car.TRACK, "wheel_r": car.WHEEL_R, "axle_f": car.AXLE_F, "axle_r": car.AXLE_R, "wb": car.AXLE_R - car.AXLE_F, "paints": s["paints"]})
 		remove_child(car)
 		car.queue_free()
+	_n_cars = _models.size()
+	# and a few lorries with two axles, driven the same way (the articulated one only stands parked)
+	for q in [["box", 0], ["box", 1], ["tipper", 0], ["tank", 0], ["box", 2]]:
+		_models.append(Truck.traffic_model(q[0], q[1]))
 
 
 ## Put a car on show: its model's body in its own colour, and four wheels that turn and steer.
@@ -554,7 +673,9 @@ func _make_car(here: Vector2) -> void:
 				crowded = true
 		if crowded:
 			continue
-		var model := _rng.randi_range(0, _models.size() - 1)
+		var model := _rng.randi_range(0, _n_cars - 1)
+		if _models.size() > _n_cars and _rng.randf() < 0.08:        # about one in twelve is a lorry
+			model = _rng.randi_range(_n_cars, _models.size() - 1)
 		var paints: Array = _models[model]["paints"]
 		cars.append({"w": wi, "dir": 1 if _rng.randf() < 0.5 else -1, "s": s, "v": 6.0, "model": model,
 			"col": paints[_rng.randi_range(0, paints.size() - 1)], "spin": 0.0, "steer": 0.0})
@@ -564,6 +685,59 @@ func _make_car(here: Vector2) -> void:
 		made["s"] = s + 5.0 * float(made["dir"])                    # (the point it drives toward starts out ahead of it)
 		stats["made"] += 1
 		return
+
+
+# ------------------------------------------------------------------ parked buses and lorries
+## The buses and lorries that stand parked (world.meta "parked_big", from tools/overrides.py PARKED_BIG): each is
+## built when the player first comes within 600 m, and set down again on the asphalt once that is laid near him.
+func _setup_depot() -> void:
+	for q in world.meta.get("parked_big", []):
+		_depot.append({"kind": str(q[0]), "paint": int(q[1]), "at": Vector2(float(q[2]), float(q[3])), "fwd": Vector2(float(q[4]), float(q[5])).normalized(), "fine": false})
+
+
+func _run_depot(delta: float, pp: Vector3) -> void:
+	_depot_in -= delta
+	if _depot_in > 0.0:
+		return
+	_depot_in = 0.5
+	var here := Vector2(pp.x, pp.z)
+	for d in _depot:
+		var dist: float = (d["at"] as Vector2).distance_to(here)
+		if dist > 700.0:
+			if d.has("node"):
+				(d["node"] as Node3D).queue_free()
+				d.erase("node")
+				d["fine"] = false
+			continue
+		if dist > 600.0 or (d.has("node") and (d["fine"] or dist > 110.0)):
+			continue
+		if not d.has("node"):
+			var node: Node3D
+			if d["kind"] == "bus":
+				node = BusModel.make()["node"]
+				var solid := StaticBody3D.new()
+				var shape := CollisionShape3D.new()
+				var bx := BoxShape3D.new()
+				bx.size = Vector3(BusModel.HALF_W * 2.0, BusModel.ROOF - 0.3, BusModel.LEN)
+				shape.shape = bx
+				shape.position = Vector3(0, 0.3 + (BusModel.ROOF - 0.3) * 0.5, 0)
+				solid.add_child(shape)
+				node.add_child(solid)
+			else:
+				node = Truck.make(d["kind"], d["paint"])
+			add_child(node)
+			d["node"] = node
+		var at: Vector2 = d["at"]
+		var fwd: Vector2 = d["fwd"]
+		var half := (BusModel.LEN if d["kind"] == "bus" else float(Truck.KINDS[d["kind"]]["len"])) * 0.4
+		var y0 := _height(at - fwd * half)
+		var y1 := _height(at + fwd * half)
+		var f3 := Vector3(fwd.x * half * 2.0, y1 - y0, fwd.y * half * 2.0).normalized()
+		var right := f3.cross(Vector3.UP).normalized()
+		var n := d["node"] as Node3D
+		n.global_transform = Transform3D(Basis(right, right.cross(f3).normalized(), -f3), Vector3(at.x, (y0 + y1) * 0.5, at.y))
+		n.reset_physics_interpolation()
+		d["fine"] = dist <= 110.0
 
 
 # ------------------------------------------------------------------ buses

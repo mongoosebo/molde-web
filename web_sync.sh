@@ -11,7 +11,7 @@
 set -e
 cd "$(dirname "$0")"
 M="${1:-$HOME/Work/molde}"
-DIRS="scripts shaders sounds world data tools"
+DIRS="scripts shaders sounds world data tools models"
 KEEP="scripts/paths.gd tools/web_site.py"
 git -C "$M" ls-files $DIRS main.tscn run.sh project.godot > /tmp/web_sync_theirs.$$
 for f in $(git ls-files $DIRS); do

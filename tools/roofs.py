@@ -21,7 +21,7 @@ from shapely.geometry import Polygon, box
 from shapely.ops import unary_union
 from scipy import ndimage
 
-VERSION = 9           # raise to throw away cached results
+VERSION = 10          # raise to throw away cached results
 STEP = 0.7            # spacing of the laser samples taken inside the outline
 TOL = 0.18            # how far a point may lie from a plane and still belong to it
 EAVE = 0.45           # how far the roof runs out past the wall
@@ -335,6 +335,7 @@ def fit(pts, dom, ground_lo, seed=0, force_plain=False):
     Y[Y < ground_lo + 1.5] = np.nan                              # the yard showing inside the outline
     valid = ~np.isnan(Y)
     total = int(valid.sum())
+    dormers = []                                                 # boxes the laser shows standing up out of a plain pitched roof
     if total < 3:
         return None
     # a plain fallback roof is never taller than a building of that size can be (a tree over a shed is not a tower)
@@ -526,6 +527,34 @@ def fit(pts, dom, ground_lo, seed=0, force_plain=False):
                 return flat_roof(pts, level)
             planes, flat = plain_planes, [False, False]
             bodies, regions, simple = [[0, 1]], [foot], True
+            # dormers: where the laser stands half a metre or more over the plain roof in a compact, level patch
+            # of some square metres on one slope (a tree over the roof is neither compact nor level)
+            res = np.full(U.shape, np.nan)
+            res[meas] = Y[meas] - np.min([ev(p[0], ii[meas], jj[meas]) for p in plain_planes], 0)
+            up_ = meas & (res > 0.45) & (res < 2.4)
+            if 0 < up_.sum() < 0.22 * meas.sum():
+                lab_, nl_ = ndimage.label(up_)
+                inside_ = foot.buffer(-0.6)
+                for g_ in range(1, nl_ + 1):
+                    m_ = lab_ == g_
+                    n_ = int(m_.sum())
+                    if n_ < 4 or n_ > 34:
+                        continue
+                    js_, is_ = np.nonzero(m_)
+                    du_, dv_ = (is_.max() - is_.min() + 1) * STEP, (js_.max() - js_.min() + 1) * STEP
+                    wid_, dep_ = (du_, dv_) if along_u else (dv_, du_)          # along the ridge, across it
+                    if n_ * STEP * STEP < 0.55 * du_ * dv_ or not (1.2 <= wid_ <= 5.0 and 0.7 <= dep_ <= 4.5) or float(np.std(Y[m_])) > 0.45:
+                        continue
+                    cu_, cv_ = float(U[m_].mean()), float(V[m_].mean())
+                    xc_ = cv_ if along_u else cu_
+                    if abs(xc_ - mid) < 0.9 or not inside_.contains(shapely.Point(cu_, cv_)):
+                        continue
+                    out_ = (v if along_u else u) * (1.0 if xc_ > mid else -1.0)  # down the slope it stands on
+                    wx_, wz_ = world(cu_, cv_)
+                    top_ = float(np.percentile(Y[m_], 75))
+                    dormers.append([round(float(wx_), 2), round(float(wz_), 2), round(top_, 2), round(wid_, 2), round(dep_, 2),
+                                    round(float(out_[0]), 3), round(float(out_[1]), 3), round(top_ - float(np.median(res[m_])), 2)])
+                dormers = dormers[:4]
             rest = np.zeros(U.shape, bool)
             base_y = eave_y - 1.0
         else:
@@ -761,4 +790,4 @@ def fit(pts, dom, ground_lo, seed=0, force_plain=False):
         if acc >= half:
             eave = y
             break
-    return {"f": faces, "w": walls, "s": steps, "eave": round(float(eave), 2), "top": round(float(hi), 2), "kind": roof_kind, "simple": simple}
+    return {"f": faces, "w": walls, "s": steps, "eave": round(float(eave), 2), "top": round(float(hi), 2), "kind": roof_kind, "simple": simple, "d": dormers}
