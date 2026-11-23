@@ -1,6 +1,6 @@
 diff -ruN a/project.godot b/project.godot
 --- a/project.godot	2026-11-22 03:38:15.000000000 +0100
-+++ b/project.godot	2026-11-23 09:52:09.823389673 +0100
++++ b/project.godot	2026-11-23 09:55:33.454287491 +0100
 @@ -3,7 +3,7 @@
  
  [application]
@@ -18,9 +18,21 @@ diff -ruN a/project.godot b/project.godot
  
  [shader_globals]
  
+diff -ruN a/scripts/car.gd b/scripts/car.gd
+--- a/scripts/car.gd	2026-11-22 03:38:15.000000000 +0100
++++ b/scripts/car.gd	2026-11-23 09:55:33.453135963 +0100
+@@ -38,7 +38,7 @@
+ var SCREENS := [Vector2(-0.97, -0.44), Vector2(0.99, 1.47)]     # windscreen and rear window, along the car
+ var SIDE_GLASS := Vector2(-0.70, 1.20)
+ var PILLARS := [Vector2(0.17, 0.27)]          # black pillars between the side windows
+-var MODEL := "res://models/volvo.glb"         # the Volvo's own model, if the file is there (see _own_model)
++var MODEL: String = "/world/models/volvo.glb" if OS.has_feature("web") else "res://models/volvo.glb"         # the Volvo's own model, if the file is there (see _own_model)
+ var PAINT_SHADER := "res://shaders/car_paint.gdshader"
+ var BODY_BOX := Vector3(1.78, 1.25, 4.8)      # for bumping into when parked
+ var AERIAL_LEN := 0.95
 diff -ruN a/scripts/detail.gd b/scripts/detail.gd
 --- a/scripts/detail.gd	2026-11-22 03:38:15.000000000 +0100
-+++ b/scripts/detail.gd	2026-11-23 09:52:09.822348504 +0100
++++ b/scripts/detail.gd	2026-11-23 09:55:33.453229641 +0100
 @@ -1,4 +1,5 @@
  extends Node3D
 +const Paths := preload("res://scripts/paths.gd")
@@ -47,7 +59,7 @@ diff -ruN a/scripts/detail.gd b/scripts/detail.gd
  		var key := Vector2i(int(data[i]), int(data[i + 1]))
 diff -ruN a/scripts/facades.gd b/scripts/facades.gd
 --- a/scripts/facades.gd	2026-11-22 03:38:15.000000000 +0100
-+++ b/scripts/facades.gd	2026-11-23 09:52:09.822422499 +0100
++++ b/scripts/facades.gd	2026-11-23 09:55:33.453332207 +0100
 @@ -3,7 +3,8 @@
  ## corner boards, eaves and proper roofs, generated from each building's real footprint, measured
  ## height and roof shape, and its type on the map. The look is a guess by type, not a survey.
@@ -69,7 +81,7 @@ diff -ruN a/scripts/facades.gd b/scripts/facades.gd
  	return m
 diff -ruN a/scripts/hud.gd b/scripts/hud.gd
 --- a/scripts/hud.gd	2026-11-22 03:38:15.000000000 +0100
-+++ b/scripts/hud.gd	2026-11-23 09:52:09.822532608 +0100
++++ b/scripts/hud.gd	2026-11-23 09:55:33.453428080 +0100
 @@ -91,6 +91,8 @@
  
  	_help = _label(13, Color(1, 1, 1, 0.6))
@@ -81,7 +93,7 @@ diff -ruN a/scripts/hud.gd b/scripts/hud.gd
  	_intro.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 diff -ruN a/scripts/landmarks.gd b/scripts/landmarks.gd
 --- a/scripts/landmarks.gd	2026-11-22 03:38:15.000000000 +0100
-+++ b/scripts/landmarks.gd	2026-11-23 09:52:09.822624169 +0100
++++ b/scripts/landmarks.gd	2026-11-23 09:55:33.453561757 +0100
 @@ -3,7 +3,8 @@
  ## Real footprints from the map; facades are modelled with recessed windows, frames, sills,
  ## shopfronts, roofs and textured materials (textures made by tools/make_textures.py).
@@ -94,7 +106,7 @@ diff -ruN a/scripts/landmarks.gd b/scripts/landmarks.gd
  const SPECS := {
 diff -ruN a/scripts/main.gd b/scripts/main.gd
 --- a/scripts/main.gd	2026-11-22 03:38:15.000000000 +0100
-+++ b/scripts/main.gd	2026-11-23 09:52:09.822657831 +0100
++++ b/scripts/main.gd	2026-11-23 09:55:33.453600290 +0100
 @@ -11,6 +11,7 @@
  const MercedesScript := preload("res://scripts/mercedes.gd")
  const BikeScript := preload("res://scripts/bike.gd")
@@ -136,7 +148,7 @@ diff -ruN a/scripts/main.gd b/scripts/main.gd
  	_key("reset", [KEY_F5])
 diff -ruN a/scripts/people.gd b/scripts/people.gd
 --- a/scripts/people.gd	2026-11-22 03:38:15.000000000 +0100
-+++ b/scripts/people.gd	2026-11-23 09:52:09.822968743 +0100
++++ b/scripts/people.gd	2026-11-23 09:55:33.453826265 +0100
 @@ -9,8 +9,9 @@
  
  const Body := preload("res://scripts/body.gd")
@@ -169,7 +181,7 @@ diff -ruN a/scripts/people.gd b/scripts/people.gd
  
 diff -ruN a/scripts/player.gd b/scripts/player.gd
 --- a/scripts/player.gd	2026-11-22 03:38:15.000000000 +0100
-+++ b/scripts/player.gd	2026-11-23 09:52:09.822995763 +0100
++++ b/scripts/player.gd	2026-11-23 09:55:33.453867771 +0100
 @@ -130,7 +130,8 @@
  	_arm.add_child(_cam)
  	_cam.make_current()
@@ -180,9 +192,18 @@ diff -ruN a/scripts/player.gd b/scripts/player.gd
  
  
  const Body := preload("res://scripts/body.gd")        # the figure itself: shared with the people of the town
+@@ -168,7 +169,7 @@
+ 	# His own model, if there is one (models/player.glb, made in Meshy and rigged by Magnus, 20 Nov): it is drawn
+ 	# in place of the built figure, whose joints go on being moved and are what its bones are laid after.
+ 	var rig = Rigged.new()
+-	if rig.setup(_figure, b, "res://models/player.glb"):
++	if rig.setup(_figure, b, "/world/models/player.glb" if OS.has_feature("web") else "res://models/player.glb"):
+ 		for mi in _figure.find_children("*", "MeshInstance3D", true, false):
+ 			if not rig.root.is_ancestor_of(mi):
+ 				(mi as MeshInstance3D).visible = false
 diff -ruN a/scripts/props.gd b/scripts/props.gd
 --- a/scripts/props.gd	2026-11-22 03:38:15.000000000 +0100
-+++ b/scripts/props.gd	2026-11-23 09:52:09.823356422 +0100
++++ b/scripts/props.gd	2026-11-23 09:55:33.454087992 +0100
 @@ -1,4 +1,5 @@
  extends Node3D
 +const Paths := preload("res://scripts/paths.gd")
@@ -220,7 +241,7 @@ diff -ruN a/scripts/props.gd b/scripts/props.gd
  	sh.code = """shader_type spatial;
 diff -ruN a/scripts/world.gd b/scripts/world.gd
 --- a/scripts/world.gd	2026-11-22 03:38:15.000000000 +0100
-+++ b/scripts/world.gd	2026-11-23 09:52:09.823215025 +0100
++++ b/scripts/world.gd	2026-11-23 09:55:33.454254825 +0100
 @@ -2,7 +2,8 @@
  ## Builds Molde from the files in res://world/ (made by tools/build_map.py):
  ## terrain, sea, buildings, trees and street names.

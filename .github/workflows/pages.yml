@@ -44,9 +44,9 @@ jobs:
           "$HOME/godot/godot" --headless --path . --import || true
           "$HOME/godot/godot" --headless --path . --export-release "Web" build/web/index.html
           test -f build/web/index.pck
-          grep -aq "models/volvo.glb" build/web/index.pck && echo "models packed" || echo "::warning::models/ (player and Volvo) are not in the pack; the game falls back to the plain figures"
           grep -q loadMap build/web/index.html   # the page from web/shell.html, which loads the map
           python3 tools/web_site.py build/web
+          test -f build/web/world/models/volvo.glb && test -f build/web/world/models/player.glb   # the models go with the map
           du -sh build/web
           ls -lh build/web
 

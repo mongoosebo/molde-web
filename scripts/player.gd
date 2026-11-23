@@ -169,7 +169,7 @@ func _build_body() -> void:
 	# His own model, if there is one (models/player.glb, made in Meshy and rigged by Magnus, 20 Nov): it is drawn
 	# in place of the built figure, whose joints go on being moved and are what its bones are laid after.
 	var rig = Rigged.new()
-	if rig.setup(_figure, b, "res://models/player.glb"):
+	if rig.setup(_figure, b, "/world/models/player.glb" if OS.has_feature("web") else "res://models/player.glb"):
 		for mi in _figure.find_children("*", "MeshInstance3D", true, false):
 			if not rig.root.is_ancestor_of(mi):
 				(mi as MeshInstance3D).visible = false

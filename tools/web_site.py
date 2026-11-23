@@ -27,6 +27,16 @@ for p in sorted(src.rglob("*")):
     files.append({"name": name, "size": len(data), "hash": hashlib.sha1(data).hexdigest()[:12]})
     (dest / name).parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(p, dest / name)
+# The player's and the Volvo's models (models/, left out of the pack by its .gdignore) go along with the map, as
+# world/models/; in the browser scripts/car.gd and player.gd read them from /world/models/.
+for p in sorted((root / "models").glob("*")):
+    if not p.is_file() or p.suffix == ".import" or p.name.startswith("."):
+        continue
+    name = "models/" + p.name
+    data = p.read_bytes()
+    files.append({"name": name, "size": len(data), "hash": hashlib.sha1(data).hexdigest()[:12]})
+    (dest / name).parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(p, dest / name)
 
 (dest / "files.json").write_text(json.dumps(files, indent=0))
 big = max(files, key=lambda f: f["size"])
