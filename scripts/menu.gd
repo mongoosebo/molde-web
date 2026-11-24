@@ -37,6 +37,7 @@ var _mute: CheckBox
 var _ripples: CheckBox
 var _traffic_buttons: Array = []
 var _grass_buttons: Array = []
+var _quality_buttons: Array = []
 var _confirm: Panel
 var _season_buttons: Array = []
 var _occasion_buttons: Array = []
@@ -143,6 +144,13 @@ func setup(m, w, p, d, wt, s) -> void:
 	sound = s
 	layer = 20
 	_build()
+	if OS.has_feature("web"):
+		# a browser draws with the simpler renderer, often on a laptop: it starts with little traffic and some
+		# grass (the menu still gives all of both)
+		traffic = 1
+		main.traffic.amount = 1
+		grass = 1
+		main.grass.amount = 1
 	_load()
 	_root.visible = false
 
@@ -348,6 +356,18 @@ func _build() -> void:
 		grow.add_child(b)
 		_grass_buttons.append(b)
 	grid.add_child(grow)
+	grid.add_child(_label("Picture", 14, 0.85))
+	var qrow := HBoxContainer.new()
+	qrow.add_theme_constant_override("separation", 6)
+	for i in 3:
+		var b := _button(["Light", "Normal", "Fine"][i], 74)
+		b.tooltip_text = ["For a weaker machine: drawn at three quarters of the size, no shading in the corners", "Edges smoothed with two samples a point", "Edges smoothed with four samples a point: hard to tell from Normal, and a fifth slower"][i]
+		b.pressed.connect(func():
+			main.set_quality(i)
+			_later())
+		qrow.add_child(b)
+		_quality_buttons.append(b)
+	grid.add_child(qrow)
 	grid.add_child(_label("Water", 14, 0.85))
 	_ripples = CheckBox.new()
 	_ripples.text = "Ripples and wakes"
@@ -571,6 +591,7 @@ func _refresh() -> void:
 	for i in 3:
 		_light(_traffic_buttons[i], traffic == i)
 		_light(_grass_buttons[i], grass == i)
+		_light(_quality_buttons[i], main.quality == i)
 		_light(_occasion_buttons[i], occasion == i)
 	for i in 2:
 		_light(_season_buttons[i], weather.winter == (i == 1))
@@ -587,6 +608,7 @@ func save() -> void:
 	cf.set_value("world", "traffic", traffic)
 	cf.set_value("world", "grass", grass)
 	cf.set_value("world", "ripples", world.ripples.enabled)
+	cf.set_value("picture", "quality", main.quality)
 	cf.set_value("time", "hours", daytime.hours)
 	cf.set_value("time", "day", daytime.day)
 	cf.set_value("time", "rate", daytime.rate)
@@ -610,6 +632,7 @@ func _load() -> void:
 	grass = cf.get_value("world", "grass", grass)
 	main.grass.amount = grass
 	world.ripples.enabled = cf.get_value("world", "ripples", true)
+	main.set_quality(int(cf.get_value("picture", "quality", 1)))
 	weather.winter = cf.get_value("world", "winter", false)
 	weather.slippery = cf.get_value("world", "slippery", false)
 	occasion = cf.get_value("world", "occasion", 0)

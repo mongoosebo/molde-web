@@ -1569,11 +1569,23 @@ for _t, _pts, _id in buildings_raw:
     if poly.is_valid:
         _blds.append(poly)
 bld_union = unary_union(_blds)
+_bld_bufs = {}
+
+
+def bld_buf(d):
+    """All the buildings widened by d metres. Worked out once for each d: it was done again for every patch,
+    bus stop and marked point that had to keep clear of buildings, a second or more each time, which was a
+    third of the whole build (tools/profile_build.py, 24 Nov)."""
+    if d not in _bld_bufs:
+        _bld_bufs[d] = bld_union.buffer(d)
+    return _bld_bufs[d]
+
+
 map_box = shapely.box(X0 + 6, Z0 + 6, X1 - 6, Z1 - 6)
-road_all = unary_union(_all).buffer(2.5, quad_segs=3).buffer(-2.5, quad_segs=3).difference(bld_union.buffer(0.05)).intersection(map_box)
+road_all = unary_union(_all).buffer(2.5, quad_segs=3).buffer(-2.5, quad_segs=3).difference(bld_buf(0.05)).intersection(map_box)
 drive = unary_union(_drive).buffer(2.5, quad_segs=3).buffer(-2.5, quad_segs=3)
 road_main = unary_union(_main).buffer(2.5, quad_segs=3).buffer(-2.5, quad_segs=3)
-side = unary_union(_side).buffer(0.8, quad_segs=2).buffer(-0.8, quad_segs=2).difference(road_main).difference(bld_union.buffer(0.05)).intersection(map_box)
+side = unary_union(_side).buffer(0.8, quad_segs=2).buffer(-0.8, quad_segs=2).difference(road_main).difference(bld_buf(0.05)).intersection(map_box)
 side = unary_union([g for g in getattr(side, "geoms", [side]) if g.geom_type == "Polygon" and g.area > 3.0])
 side = side.difference(road_all.buffer(-0.05))             # where a road runs through a paved square, it is road
 # Paved foot and cycle paths are asphalt like the roads, laid and cut with them (not ribbons of their own):
@@ -1585,13 +1597,13 @@ while _i + 4 <= len(_ro):
         _paths.append(LineString(_ro[_i + 4:_i + 4 + _n * 5].reshape(_n, 5)[:, :2]).buffer(float(_ro[_i + 1]), quad_segs=3))
     _i += 4 + _n * 5
 if _paths:
-    _pp = unary_union(_paths).difference(bld_union.buffer(0.05)).difference(side).intersection(map_box)
+    _pp = unary_union(_paths).difference(bld_buf(0.05)).difference(side).intersection(map_box)
     print("  paved paths laid as asphalt: %d stretches, %.0f m2" % (len(_paths), _pp.area))
     road_all = unary_union([road_all, _pp])
 # asphalt where someone who knows the place says there is asphalt: the open ground round each point
 _fills = []
 for x, z, r in overrides.ASPHALT_AT:
-    reach = shapely.Point(x, z).buffer(r).difference(bld_union.buffer(0.2)).difference(side)
+    reach = shapely.Point(x, z).buffer(r).difference(bld_buf(0.2)).difference(side)
     part = [g for g in getattr(reach, "geoms", [reach]) if g.geom_type == "Polygon" and g.distance(shapely.Point(x, z)) < 1.0]
     if part:
         _fills.append(part[0])
@@ -1600,7 +1612,7 @@ for x, z, r in overrides.KERB_OPENINGS:
     _fills.append(gap.intersection(side.buffer(0.3)))
     side = side.difference(gap)
 if _fills:
-    road_all = unary_union([road_all] + _fills).buffer(0.6).buffer(-0.6).difference(bld_union.buffer(0.05)).intersection(map_box)
+    road_all = unary_union([road_all] + _fills).buffer(0.6).buffer(-0.6).difference(bld_buf(0.05)).intersection(map_box)
     side = side.difference(road_all.buffer(-0.05))
 # Unpaved ground closed in by paving that is paved too, says someone who knows the place: the pocket of open
 # ground round each point (as far as the paving, the buildings, or the given distance) becomes asphalt or slabs.
@@ -1611,7 +1623,7 @@ for _pts, _as_road in ((overrides.ASPHALT_POCKETS, True), (overrides.PAVING_POCK
         # (a small patch of the other kind of paving lying in the pocket goes with it)
         _other = side if _as_road else road_all
         _big = unary_union([g for g in getattr(_other, "geoms", [_other]) if g.geom_type == "Polygon" and g.area > 80.0])
-        reach = shapely.Point(x, z).buffer(r).difference(bld_union.buffer(0.05)).difference(_big).difference(road_all if _as_road else side)
+        reach = shapely.Point(x, z).buffer(r).difference(bld_buf(0.05)).difference(_big).difference(road_all if _as_road else side)
         part = [g for g in getattr(reach, "geoms", [reach]) if g.geom_type == "Polygon" and g.distance(shapely.Point(x, z)) < 1.5]
         if part:
             _got.append(part[0].buffer(0.3))
@@ -1619,10 +1631,10 @@ for _pts, _as_road in ((overrides.ASPHALT_POCKETS, True), (overrides.PAVING_POCK
         else:
             print("  no open ground to pave at", x, z)
     if _got and _as_road:
-        road_all = unary_union([road_all] + _got).difference(bld_union.buffer(0.05)).intersection(map_box)
+        road_all = unary_union([road_all] + _got).difference(bld_buf(0.05)).intersection(map_box)
         side = side.difference(road_all.buffer(-0.05))
     elif _got:
-        side = unary_union([side] + _got).difference(bld_union.buffer(0.05)).intersection(map_box)
+        side = unary_union([side] + _got).difference(bld_buf(0.05)).intersection(map_box)
         road_all = road_all.difference(unary_union(_got).buffer(-0.35))
 # Patches set by hand (overrides.PATCHES: circles) and with the tool in the game (tools/patches.jsonl: squares):
 # "asphalt" and "paving" lay that surface there, "none" takes both away; "island" turns the small piece of
@@ -1649,7 +1661,7 @@ if os.path.exists(_apath):
             continue
         _auto.append(_g)
     if _auto:
-        _au = unary_union(_auto).difference(side.buffer(0.05)).difference(bld_union.buffer(0.3)).intersection(map_box)
+        _au = unary_union(_auto).difference(side.buffer(0.05)).difference(bld_buf(0.3)).intersection(map_box)
         # never on a square: Rådhusplassen and its surroundings have their own floor of stone, and the squares and
         # walking streets the map draws as areas are not asphalt either (splashes of asphalt lay on Rådhusplassen
         # after the first build with this: 19 Nov)
@@ -1682,7 +1694,7 @@ if os.path.exists(_apath):
         _drives = [g for g in getattr(_thin, "geoms", [_thin]) if g.geom_type == "Polygon" and g.area >= 30.0]
         _a_bumps = _thin.area - sum(g.area for g in _drives)
         _au = unary_union([_core] + _drives).simplify(0.45).buffer(0)
-        _au = _au.difference(side.buffer(0.05)).difference(bld_union.buffer(0.3)).difference(_green).intersection(map_box)
+        _au = _au.difference(side.buffer(0.05)).difference(bld_buf(0.3)).difference(_green).intersection(map_box)
         if _not:
             _au = _au.difference(unary_union(_not))
         print("  found asphalt given the outline of a yard: bays and gaps filled %d m2, bumps and fingers taken off %d m2" % (_a_bays, _a_bumps))
@@ -1805,6 +1817,7 @@ _slab_says = []                                            # where the database 
 for r in nvdb.inside(nvdb.load(48), 20):
     if len(r["pts"]) >= 4 and any(q in str(r["p"].get("Belegning")) for q in ("heller", "stein", "Granitt", "mønstret", "Skifer")):
         _slab_says.append(LineString(list(zip(r["pts"][0::2], r["pts"][1::2]))).buffer((r["p"].get("Bredde, gjennomsnitt") or 2.5) / 2 + 2.0))
+_road_all_b = road_all.buffer(0.05)                         # (once, not for every sidewalk: that was 9 minutes of the build)
 for r in nvdb.inside(nvdb.load(48), 20):
     _wd = r["p"].get("Bredde, gjennomsnitt")
     if len(r["pts"]) < 4 or not _wd or not 1.2 <= _wd <= 5.0:
@@ -1841,7 +1854,7 @@ for r in nvdb.inside(nvdb.load(48), 20):
     if _sw.intersection(_side_b).area > 0.5 * _sw.area or _sw.area < 0.5 * _l.length * _wd:
         continue                                           # a sidewalk is there already, or most of it would lie in the carriageway
     # (asphalt that is not carriageway gives way to it: 52 stretches lay on yards and verges the game had as asphalt)
-    _sw = _sw.difference(road_all.buffer(0.05))
+    _sw = _sw.difference(_road_all_b)
     _nv.append(("paving", _sw))
     n_sw += 1
     a_sw += _sw.area
@@ -1954,7 +1967,7 @@ for _kind, _shape in _patches:
         if not _hit:
             continue                                       # (then it is a traffic island: see where those are made, below)
         _shape, _kind = unary_union(_hit).buffer(0.3), "asphalt"
-    _shape = _shape.difference(bld_union.buffer(0.05)).intersection(map_box)
+    _shape = _shape.difference(bld_buf(0.05)).intersection(map_box)
     if _kind == "asphalt":
         road_all = unary_union([road_all, _shape])
         side = side.difference(_shape)
@@ -2070,7 +2083,7 @@ if _pads:
     _have = unary_union([road_laid, road_all, side]).buffer(0.05)
     _new = []
     for _g in _pads:
-        _q = _g.difference(_have).difference(bld_union.buffer(0.3)).intersection(map_box)
+        _q = _g.difference(_have).difference(bld_buf(0.3)).intersection(map_box)
         if road_decks:
             _q = _q.difference(_deck_area)
         _q = _q.buffer(-0.4).buffer(0.4, join_style=2)
@@ -2285,14 +2298,14 @@ print("  road bridges with a sidewalk carried over the deck:", _n_walks)
 # (first the sidewalk against itself: two pieces of it a millimetre apart left an edge that matched nothing,
 # and tools/holes.py found a 2 cm step along it, 19 Nov)
 _s0 = side.area
-side = side.buffer(0.03, join_style=2).buffer(-0.03, join_style=2).difference(bld_union.buffer(0.05)).intersection(map_box)
+side = side.buffer(0.03, join_style=2).buffer(-0.03, join_style=2).difference(bld_buf(0.05)).intersection(map_box)
 if road_decks:
     side = side.difference(_deck_area)
 side = unary_union([g for g in shapely.get_parts(side) if g.geom_type == "Polygon" and g.area > 1e-6])
 print("  hairline slits within the sidewalk closed: %.1f m2 added" % (side.area - _s0))
 _u = shapely.union_all([road_laid, side])
 _a0 = road_laid.area
-road_laid = _u.buffer(0.05, join_style=2).buffer(-0.05, join_style=2).difference(side).difference(bld_union.buffer(0.05)).intersection(map_box)
+road_laid = _u.buffer(0.05, join_style=2).buffer(-0.05, join_style=2).difference(side).difference(bld_buf(0.05)).intersection(map_box)
 if road_decks:
     road_laid = road_laid.difference(_deck_cut)
     # the road is as wide as the deck where it comes onto it: a corner of grass stood in the carriageway at the
@@ -2636,7 +2649,7 @@ if _rh is not None and plaza_poly is not None:
 
 plaza_tris = []
 if plaza_poly is not None:
-    _floor = plaza_poly.buffer(22.0).difference(bld_union.buffer(0.05)).difference(road_all).difference(side)
+    _floor = plaza_poly.buffer(22.0).difference(bld_buf(0.05)).difference(road_all).difference(side)
     _floor = [g for g in getattr(_floor, "geoms", [_floor]) if g.geom_type == "Polygon" and g.intersects(plaza_poly)]
     if _floor:
         _floor = max(_floor, key=lambda g: g.intersection(plaza_poly).area).buffer(0.25).difference(bld_union)
@@ -3849,7 +3862,7 @@ def beside_road(x, z, clear=0.9):
 
 shapely.prepare(road_all)
 shapely.prepare(side)
-bld_near = bld_union.buffer(1.0)
+bld_near = bld_buf(1.0)
 shapely.prepare(bld_near)
 _lamps = []
 

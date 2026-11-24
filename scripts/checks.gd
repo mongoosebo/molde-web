@@ -47,10 +47,92 @@ func _frames(n: int) -> void:
 ## `--bench`: how smoothly the game runs. The camera is taken along a fixed route on the roads through the
 ## centre (the town hall, along Storgata, the bus square, out Fannestrandvegen) at 50 km/h, at noon and at 23:00,
 ## with traffic and townspeople on. data/bench.json gets, for each: the mean frame time, the slowest 1 %, the
-## longest frame, and the ten worst places with what was being drawn there. Nothing limits the frame rate
+## longest frame, the ten worst places with what was being drawn there, the processor's and the graphics card's
+## share of drawing, the time in each script, triangles, objects and memory. Nothing limits the frame rate
 ## during a check, so the numbers are what the machine can do, not what the screen asks for.
+##   --speed=40          metres a second (13.9)
+##   --hours=12          only these times of day (12,23)
+##   --scale=0.5         the 3D picture drawn at this share of its size
+##   --without=a,b       with these switched off (see SWITCHES)
+##   --costs             the price list: the route at noon as it is, then once more with each of SWITCHES off;
+##                       data/bench_costs.json says what each one costs
+##   --against=FILE      compare with data/FILE (bench.json as it was before this run, by default) and say
+##                       PROBLEMS when the mean has grown by a tenth, a frame is over 16.7 ms
+##                       or more than one frame in a thousand is over 8.3 ms
+const SWITCHES := ["traffic", "people", "grass", "trees", "props", "buildings", "detail", "landmarks", "water", "terrain", "ground", "backdrop", "weather", "molde", "vehicles", "ripples", "sky", "shadows", "ssao", "glow", "fog", "msaa"]
+
+
+func _switch(what: String, on: bool) -> void:
+	var w = m.world
+	match what:
+		"traffic":
+			m.traffic.visible = on
+			m.traffic.set_process(on)
+		"people":
+			m.people.visible = on
+			m.people.set_physics_process(on)
+		"grass":
+			m.grass.visible = on
+			m.grass.set_process(on)
+		"trees":
+			w.get_node("Trees").visible = on
+		"props":
+			w.props.visible = on
+		"buildings":
+			w.get_node("Buildings").visible = on
+		"detail":
+			w.detail.visible = on
+		"landmarks":
+			w.get_node("Landmarks").visible = on
+		"water":
+			for n in ["Sea", "Lakes", "Rivers"]:
+				if w.has_node(n):
+					w.get_node(n).visible = on
+		"shadows":
+			m.daytime.no_shadows = not on
+			m.daytime.apply()
+		"ssao":
+			m._env.ssao_enabled = on
+		"glow":
+			m._env.glow_enabled = on
+		"fog":
+			m._env.fog_enabled = on
+		"msaa":
+			get_viewport().msaa_3d = [Viewport.MSAA_DISABLED, Viewport.MSAA_2X, Viewport.MSAA_4X][m.quality] if on else Viewport.MSAA_DISABLED
+		"terrain":
+			w.get_node("Terrain").visible = on
+		"ground":
+			w._near_root.visible = on
+		"backdrop":
+			w.get_node("Backdrop").visible = on
+		"ripples":
+			w.ripples.enabled = on
+		"weather":
+			m.weather.set_process(on)
+		"sky":
+			m._env.background_mode = Environment.BG_SKY if on else Environment.BG_COLOR
+		"molde":
+			m.molde.visible = on
+			m.molde.set_process(on)
+		"vehicles":
+			for v in m.player.vehicles:
+				v.visible = on
+		"all":                                             # (nothing drawn but the sky: what a frame costs by itself)
+			for sw in ["traffic", "people", "grass", "trees", "props", "buildings", "detail", "landmarks", "water", "terrain", "ground", "backdrop", "weather", "molde", "vehicles"]:
+				_switch(sw, on)
+		"msaa_4x":                                         # (the dearer setting in place of the usual one: it saves less than nothing)
+			get_viewport().msaa_3d = Viewport.MSAA_2X if on else Viewport.MSAA_4X
+		"ssao_low":                                        # (these three: the cheaper setting in place of the usual one)
+			RenderingServer.environment_set_ssao_quality(RenderingServer.ENV_SSAO_QUALITY_MEDIUM if on else RenderingServer.ENV_SSAO_QUALITY_LOW, true, 0.5, 2, 50.0, 300.0)
+		"ssao_very_low":
+			RenderingServer.environment_set_ssao_quality(RenderingServer.ENV_SSAO_QUALITY_MEDIUM if on else RenderingServer.ENV_SSAO_QUALITY_VERY_LOW, true, 0.5, 2, 50.0, 300.0)
+		"glow_plain":
+			RenderingServer.environment_glow_set_use_bicubic_upscale(on)
+		_:
+			print("BENCH no such switch: ", what)
+
+
 func _bench() -> void:
-	var world = m.world
 	var player = m.player
 	player.set_process_unhandled_input(false)
 	player.set_physics_process(false)
@@ -65,97 +147,190 @@ func _bench() -> void:
 	for i in route.size() - 1:
 		length += route[i].distance_to(route[i + 1])
 	var speed := float(_arg("--speed", "13.9"))
-	var out := {"route_m": snappedf(length, 1.0), "speed": speed, "renderer": str(ProjectSettings.get_setting("rendering/renderer/rendering_method")), "runs": {}}
+	var vp := get_viewport()
+	vp.scaling_3d_scale = float(_arg("--scale", "1"))
+	RenderingServer.viewport_set_measure_render_time(vp.get_viewport_rid(), true)
+	var size := Vector2(vp.get_visible_rect().size) * vp.scaling_3d_scale
+	var out := {"route_m": snappedf(length, 1.0), "speed": speed, "renderer": str(ProjectSettings.get_setting("rendering/renderer/rendering_method")),
+		"picture": "%d x %d" % [int(DisplayServer.window_get_size().x * vp.scaling_3d_scale), int(DisplayServer.window_get_size().y * vp.scaling_3d_scale)],
+		"loading_s": m.hud.load_times(), "runs": {}}
 	if OS.get_cmdline_args().has("gl_compatibility"):
 		out["renderer"] = "gl_compatibility"
-	for hour in [12.0, 23.0]:
-		m.daytime.hours = hour
-		m.daytime.rate = 0.0
-		m.daytime.apply()
-		var p0 := route[0]
-		player.global_position = Vector3(p0.x, world.height_at(p0.x, p0.y) + 0.6, p0.y)
-		world.update_streaming(player.global_position)
-		world.flush(player.global_position)
-		await _frames(90)
-		var times := PackedFloat32Array()
-		var where := PackedVector2Array()
-		var draws := PackedInt32Array()
-		var what: Array = []
-		var late := 0                                      # frames in which the cell the camera is in was not built yet
-		var before: Dictionary = world.spent.duplicate()
-		var i := 0
-		var along := 0.0
-		var last := Time.get_ticks_usec()
-		while i < route.size() - 1:
-			await get_tree().process_frame
-			var now := Time.get_ticks_usec()
-			var dt := float(now - last) / 1000.0
-			last = now
-			along += speed * minf(dt, 50.0) / 1000.0
-			while i < route.size() - 1 and along > route[i].distance_to(route[i + 1]):
-				along -= route[i].distance_to(route[i + 1])
-				i += 1
-			if i >= route.size() - 1:
-				break
-			var seg := route[i + 1] - route[i]
-			var q := route[i] + seg.normalized() * along
-			var y: float = world.detail.top_at(q.x, q.y)
-			if is_nan(y):
-				y = world.height_at(q.x, q.y)
-			player.global_position = Vector3(q.x, y + 0.6, q.y)
-			player.yaw = lerp_angle(player.yaw, atan2(-seg.x, -seg.y), 0.08)
-			world.update_streaming(player.global_position)
-			times.append(dt)
-			var here: Vector2i = world.detail.cell_of(q.x, q.y)
-			if not world.detail._cells.has(here) and (world.detail.buildings.has(here) or world.detail.paved.has(here)):
-				late += 1
-			where.append(q)
-			draws.append(int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)))
-			var parts := {}
-			if dt > 12.0:                                  # a slow frame: which of the jobs had the time
-				for key in world.spent:
-					var ms := float(int(world.spent[key]) - int(before.get(key, 0))) / 1000.0
-					if ms > 1.0:
-						parts[key] = snappedf(ms, 0.1)
-			what.append(parts)
-			before = world.spent.duplicate()
-		var order := range(times.size())
-		order.sort_custom(func(a, b): return times[a] > times[b])
-		var total := 0.0
-		for t in times:
-			total += t
-		var over20 := 0
-		var over83 := 0
-		for t in times:
-			if t > 20.0:
-				over20 += 1
-			if t > 8.34:
-				over83 += 1
-		var worst := []
-		for k in order:
-			var far := true
-			for w in worst:
-				if Vector2(w["x"], w["z"]).distance_to(where[k]) < 60.0:
-					far = false
-			if far:
-				worst.append({"ms": snappedf(times[k], 0.01), "x": snappedf(where[k].x, 1.0), "z": snappedf(where[k].y, 1.0), "street": world.locate(where[k].x, where[k].y)["street"], "draw_calls": draws[k], "in": what[k]})
-			if worst.size() >= 10:
-				break
-		var sorted := times.duplicate()
-		sorted.sort()
-		var mean_draws := 0
-		for d in draws:
-			mean_draws += d
-		var run := {"frames": times.size(), "mean_ms": snappedf(total / times.size(), 0.01), "median_ms": snappedf(sorted[sorted.size() / 2], 0.01),
-			"p99_ms": snappedf(sorted[int(sorted.size() * 0.99)], 0.01), "max_ms": snappedf(sorted[sorted.size() - 1], 0.01),
-			"frames_over_20ms": over20, "share_over_8_3ms": snappedf(float(over83) / times.size(), 0.0001), "frames_ahead_of_the_map": late, "mean_draw_calls": mean_draws / maxi(draws.size(), 1), "worst": worst}
-		out["runs"]["%02d:00" % int(hour)] = run
-		print("BENCH %02d:00  frames %d  mean %.2f ms  p99 %.2f  max %.2f  over 20 ms: %d  over 8.3 ms: %.2f %%  draw calls %d  ahead of the map: %d" % [int(hour), run["frames"], run["mean_ms"], run["p99_ms"], run["max_ms"], over20, 100.0 * run["share_over_8_3ms"], run["mean_draw_calls"], late])
-		for w in worst.slice(0, 5):
-			print("   ", w)
+	var without := _arg("--without", "")
+	if without != "":
+		out["without"] = without
+		for sw in without.split(","):
+			_switch(sw, false)
+	if "--costs" in OS.get_cmdline_user_args():
+		await _bench_costs(route, speed, out)
+		return
+	var before_file := "res://data/" + _arg("--against", _arg("--out", "bench.json"))
+	var was = JSON.parse_string(FileAccess.get_file_as_string(before_file)) if FileAccess.file_exists(before_file) else null
+	for h in _arg("--hours", "12,23").split(","):
+		var run := await _bench_run(route, speed, float(h))
+		out["runs"]["%02d:00" % int(float(h))] = run
 	var f := FileAccess.open("res://data/" + _arg("--out", "bench.json"), FileAccess.WRITE)
 	f.store_string(JSON.stringify(out, "  "))
 	f.close()
+	# against the last one (O10): the same speed and picture, or the comparison says nothing
+	var bad := 0
+	for key in out["runs"]:
+		var run: Dictionary = out["runs"][key]
+		# (a frame missed at 120 a second is 8.3 ms; one or two in sixty thousand are the machine's, not the game's.
+		# What fails is a frame that would be missed at 60 a second, or more than one in a thousand over 8.3.)
+		if float(run["max_ms"]) > 16.7:
+			print("BENCH %s: a frame of %.1f ms (over 16.7)" % [key, run["max_ms"]])
+			bad += 1
+		if float(run["share_over_8_3ms"]) > 0.001:
+			print("BENCH %s: %.2f %% of the frames over 8.3 ms (more than 0.1 %%)" % [key, 100.0 * float(run["share_over_8_3ms"])])
+			bad += 1
+		if was is Dictionary and (was["runs"] as Dictionary).has(key) and float(was.get("speed", 13.9)) == speed and str(was.get("picture", "")) == str(out["picture"]):
+			var old := float(was["runs"][key]["mean_ms"])
+			print("BENCH %s: mean %.2f ms, was %.2f" % [key, run["mean_ms"], old])
+			if float(run["mean_ms"]) > old * 1.1:
+				bad += 1
+	print("BENCH PROBLEMS: %d" % bad if bad > 0 else "BENCH holds")
+
+
+## The price list: the route at noon as it is, and once more with each thing off.
+func _bench_costs(route: PackedVector2Array, speed: float, out: Dictionary) -> void:
+	var base := await _bench_run(route, speed, 12.0)
+	var list := {}
+	var names: Array = SWITCHES.duplicate()
+	var only := _arg("--only", "")
+	if only != "":
+		names = Array(only.split(","))
+	for sw in names:
+		_switch(sw, false)
+		var run := await _bench_run(route, speed, 12.0)
+		_switch(sw, true)
+		list[sw] = {"saves_ms": snappedf(float(base["mean_ms"]) - float(run["mean_ms"]), 0.01),
+			"of_it_graphics_card_ms": snappedf(float(base["graphics_card_ms"]) - float(run["graphics_card_ms"]), 0.01),
+			"of_it_drawing_on_the_processor_ms": snappedf(float(base["draw_cpu_ms"]) - float(run["draw_cpu_ms"]), 0.01),
+			"draw_calls": int(base["mean_draw_calls"]) - int(run["mean_draw_calls"]), "triangles": int(base["mean_triangles"]) - int(run["mean_triangles"])}
+		print("COST %-10s saves %.2f ms  (graphics card %.2f, drawing on the processor %.2f)  draw calls %d  triangles %d" % [sw, list[sw]["saves_ms"], list[sw]["of_it_graphics_card_ms"], list[sw]["of_it_drawing_on_the_processor_ms"], list[sw]["draw_calls"], list[sw]["triangles"]])
+	var again := await _bench_run(route, speed, 12.0)      # (how far the machine itself drifted meanwhile)
+	out["as_it_is_at_the_end"] = again["mean_ms"]
+	print("COST the run as it is, again at the end: %.2f ms (it was %.2f)" % [again["mean_ms"], base["mean_ms"]])
+	out["as_it_is"] = base
+	out["without_each"] = list
+	out.erase("runs")
+	var f := FileAccess.open("res://data/" + _arg("--out", "bench_costs.json"), FileAccess.WRITE)
+	f.store_string(JSON.stringify(out, "  "))
+	f.close()
+
+
+func _bench_run(route: PackedVector2Array, speed: float, hour: float) -> Dictionary:
+	var world = m.world
+	var player = m.player
+	var rid := get_viewport().get_viewport_rid()
+	m.daytime.hours = hour
+	m.daytime.rate = 0.0
+	m.daytime.apply()
+	var p0 := route[0]
+	player.global_position = Vector3(p0.x, world.height_at(p0.x, p0.y) + 0.6, p0.y)
+	world.update_streaming(player.global_position)
+	world.flush(player.global_position)
+	await _frames(90)
+	var times := PackedFloat32Array()
+	var where := PackedVector2Array()
+	var draws := PackedInt32Array()
+	var what: Array = []
+	var late := 0                                      # frames in which the cell the camera is in was not built yet
+	var start: Dictionary = world.spent.duplicate()
+	var before: Dictionary = world.spent.duplicate()
+	var sums := {"cpu": 0.0, "gpu": 0.0, "process": 0.0, "physics": 0.0, "tris": 0.0, "objects": 0.0}
+	var i := 0
+	var along := 0.0
+	var last := Time.get_ticks_usec()
+	while i < route.size() - 1:
+		await get_tree().process_frame
+		var now := Time.get_ticks_usec()
+		var dt := float(now - last) / 1000.0
+		last = now
+		along += speed * minf(dt, 50.0) / 1000.0
+		while i < route.size() - 1 and along > route[i].distance_to(route[i + 1]):
+			along -= route[i].distance_to(route[i + 1])
+			i += 1
+		if i >= route.size() - 1:
+			break
+		var seg := route[i + 1] - route[i]
+		var q := route[i] + seg.normalized() * along
+		var y: float = world.detail.top_at(q.x, q.y)
+		if is_nan(y):
+			y = world.height_at(q.x, q.y)
+		player.global_position = Vector3(q.x, y + 0.6, q.y)
+		player.yaw = lerp_angle(player.yaw, atan2(-seg.x, -seg.y), 0.08)
+		world.update_streaming(player.global_position)
+		times.append(dt)
+		var here: Vector2i = world.detail.cell_of(q.x, q.y)
+		if not world.detail._cells.has(here) and (world.detail.buildings.has(here) or world.detail.paved.has(here)):
+			late += 1
+		where.append(q)
+		draws.append(int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)))
+		sums["cpu"] += RenderingServer.viewport_get_measured_render_time_cpu(rid) + RenderingServer.get_frame_setup_time_cpu()
+		sums["gpu"] += RenderingServer.viewport_get_measured_render_time_gpu(rid)
+		sums["process"] += Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
+		sums["physics"] += Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0
+		sums["tris"] += Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME)
+		sums["objects"] += Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME)
+		var parts := {}
+		if dt > 8.34:                                  # a slow frame: which of the jobs had the time
+			for key in world.spent:
+				var ms := float(int(world.spent[key]) - int(before.get(key, 0))) / 1000.0
+				if ms > 1.0:
+					parts[key] = snappedf(ms, 0.1)
+		what.append(parts)
+		before = world.spent.duplicate()
+	var order := range(times.size())
+	order.sort_custom(func(a, b): return times[a] > times[b])
+	var total := 0.0
+	for t in times:
+		total += t
+	var over20 := 0
+	var over83 := 0
+	for t in times:
+		if t > 20.0:
+			over20 += 1
+		if t > 8.34:
+			over83 += 1
+	var worst := []
+	for k in order:
+		var far := true
+		for w in worst:
+			if Vector2(w["x"], w["z"]).distance_to(where[k]) < 60.0:
+				far = false
+		if far:
+			worst.append({"ms": snappedf(times[k], 0.01), "x": snappedf(where[k].x, 1.0), "z": snappedf(where[k].y, 1.0), "street": world.locate(where[k].x, where[k].y)["street"], "draw_calls": draws[k], "in": what[k]})
+		if worst.size() >= 10:
+			break
+	var sorted := times.duplicate()
+	sorted.sort()
+	var mean_draws := 0
+	for d in draws:
+		mean_draws += d
+	var n := float(maxi(times.size(), 1))
+	var scripts := {}                                  # ms a frame in each script that reports its time (world.took)
+	for key in world.spent:
+		var ms := float(int(world.spent[key]) - int(start.get(key, 0))) / 1000.0 / n
+		if ms >= 0.005:
+			scripts[key] = snappedf(ms, 0.001)
+	var run := {"frames": times.size(), "mean_ms": snappedf(total / n, 0.01), "median_ms": snappedf(sorted[sorted.size() / 2], 0.01),
+		"p99_ms": snappedf(sorted[int(sorted.size() * 0.99)], 0.01), "max_ms": snappedf(sorted[sorted.size() - 1], 0.01),
+		"frames_over_20ms": over20, "frames_over_8_3ms": over83, "share_over_8_3ms": snappedf(float(over83) / n, 0.0001), "frames_ahead_of_the_map": late,
+		"mean_draw_calls": mean_draws / maxi(draws.size(), 1), "mean_triangles": int(sums["tris"] / n), "mean_objects": int(sums["objects"] / n),
+		"graphics_card_ms": snappedf(sums["gpu"] / n, 0.01), "draw_cpu_ms": snappedf(sums["cpu"] / n, 0.01),
+		"process_ms": snappedf(sums["process"] / n, 0.01), "physics_ms": snappedf(sums["physics"] / n, 0.01), "scripts_ms": scripts,
+		"graphics_memory_mb": int(Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0),
+		"texture_memory_mb": int(Performance.get_monitor(Performance.RENDER_TEXTURE_MEM_USED) / 1048576.0),
+		"memory_mb": int(Performance.get_monitor(Performance.MEMORY_STATIC) / 1048576.0), "nodes": int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT)),
+		"worst": worst}
+	print("BENCH %02d:00  frames %d  mean %.2f ms  p99 %.2f  max %.2f  over 20 ms: %d  over 8.3 ms: %d (%.2f %%)  draw calls %d  ahead of the map: %d" % [int(hour), run["frames"], run["mean_ms"], run["p99_ms"], run["max_ms"], over20, over83, 100.0 * run["share_over_8_3ms"], run["mean_draw_calls"], late])
+	print("   graphics card %.2f ms  drawing on the processor %.2f  process %.2f  physics %.2f  triangles %d  objects %d  graphics memory %d MB (textures %d)  memory %d MB" % [run["graphics_card_ms"], run["draw_cpu_ms"], run["process_ms"], run["physics_ms"], run["mean_triangles"], run["mean_objects"], run["graphics_memory_mb"], run["texture_memory_mb"], run["memory_mb"]])
+	print("   scripts: ", scripts)
+	for w in worst.slice(0, 5):
+		print("   ", w)
+	return run
 
 
 func _shot(name: String) -> void:

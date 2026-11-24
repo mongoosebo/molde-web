@@ -132,6 +132,34 @@ func set_loading(text: String) -> void:
 	_loading_label.text = "MOLDE\n\n" + text
 
 
+## The start, timed: mark(what) is called as each part of the loading begins, print_load() says how long each took
+## (`LOAD` lines; scripts/checks.gd puts them in data/bench.json).
+var load_marks: Array = []
+
+
+func mark(what: String) -> void:
+	load_marks.append([what, Time.get_ticks_usec()])
+
+
+func load_times() -> Dictionary:
+	var out := {}
+	if load_marks.is_empty():
+		return out
+	out["engine and first frame"] = snappedf(float(load_marks[0][1]) / 1e6, 0.01)
+	for i in load_marks.size() - 1:
+		out[String(load_marks[i][0])] = snappedf(float(load_marks[i + 1][1] - load_marks[i][1]) / 1e6, 0.01)
+	out["all"] = snappedf(float(load_marks[load_marks.size() - 1][1]) / 1e6, 0.01)
+	return out
+
+
+func print_load() -> void:
+	var t := load_times()
+	var line := "LOAD"
+	for k in t:
+		line += "  %s %.2f" % [k, t[k]]
+	print(line)
+
+
 func start(w, p) -> void:
 	world = w
 	player = p

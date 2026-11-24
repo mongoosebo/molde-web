@@ -59,6 +59,7 @@ func _ready() -> void:
 	add_child(hud)
 	hud.set_loading("")
 	_setup_environment()
+	set_quality(int(_quality_arg()))
 
 	if OS.has_feature("web"):          # the page has put the map in /world/ before starting (web/shell.html)
 		if not FileAccess.file_exists("/world/meta.json"):
@@ -66,20 +67,25 @@ func _ready() -> void:
 			return
 		Paths.world = "/world/"
 
+	hud.mark("world")
 	world = WorldScript.new()
 	world.name = "World"
 	add_child(world)
 	await world.build(hud)
 
+	hud.mark("player and vehicles")
 	player = PlayerScript.new()
 	player.name = "Player"
 	player.world = world
 	var s: Vector2 = START_AT
 	player.position = Vector3(s.x, world.height_at(s.x, s.y) + 0.5, s.y)
 	player.yaw = 0.0                # facing north across the bus square, toward Storgata
+	hud.mark("the town round the start")
 	world.update_streaming(player.position)
 	world.flush(player.position)
+	hud.mark("player")
 	add_child(player)
+	hud.mark("vehicles")
 
 	# What can be driven: an ATV, a white Volvo 740, a Honda Integra, a helicopter, a Mercedes estate and a
 	# bicycle. Where each stands is in place_vehicles(), which the reset uses too.
@@ -100,6 +106,7 @@ func _ready() -> void:
 	bus = made[6]
 	player.vehicles = [atv, car, integra, heli, merc, bike, bus]
 	# aeroplanes at the airport: a Cessna on the apron, and the airliners where the map stands them
+	hud.mark("aeroplanes")
 	var plane_script: GDScript = load("res://scripts/aeroplane.gd")
 	planes.clear()
 	for q in [["cessna", Vector3(CESSNA_AT.x, 0, CESSNA_AT.y), CESSNA_TURN]] + world.props.airliners.map(func(r): return ["airliner", r[0], r[1]]):
@@ -111,32 +118,38 @@ func _ready() -> void:
 		planes.append([pl, q[1], q[2]])
 		player.vehicles.append(pl)
 	place_vehicles()
+	hud.mark("sound")
 	sound = Node.new()
 	sound.name = "Sound"
 	sound.set_script(load("res://scripts/sound.gd"))
 	add_child(sound)
 	sound.setup(world, player)
 	player.sound = sound
+	hud.mark("daytime")
 	daytime = Node.new()
 	daytime.name = "Daytime"
 	daytime.set_script(load("res://scripts/daytime.gd"))
 	add_child(daytime)
 	daytime.setup(world, player, _env, _sun)
+	hud.mark("weather")
 	weather = Node.new()
 	weather.name = "Weather"
 	weather.set_script(load("res://scripts/weather.gd"))
 	add_child(weather)
 	weather.setup(world, player, daytime)
+	hud.mark("traffic")
 	traffic = Node3D.new()
 	traffic.name = "Traffic"
 	traffic.set_script(load("res://scripts/traffic.gd"))
 	add_child(traffic)
 	traffic.setup(world, player, daytime)
+	hud.mark("people")
 	people = Node3D.new()
 	people.name = "People"
 	people.set_script(load("res://scripts/people.gd"))
 	add_child(people)
 	people.setup(world, player, daytime, weather)
+	hud.mark("molde")
 	molde = Node3D.new()
 	molde.name = "Molde"
 	molde.set_script(load("res://scripts/molde.gd"))
@@ -146,27 +159,33 @@ func _ready() -> void:
 		if b["kind"] == "steamer":
 			berth = b["berth"]
 	molde.setup(world, player, daytime, people, traffic._meshes, berth)
+	hud.mark("grass")
 	grass = Node3D.new()
 	grass.name = "Grass"
 	grass.set_script(load("res://scripts/grass.gd"))
 	add_child(grass)
 	grass.setup(world, player)
+	hud.mark("menu")
 	menu = CanvasLayer.new()
 	menu.name = "Menu"
 	menu.set_script(load("res://scripts/menu.gd"))
 	add_child(menu)
 	menu.setup(self, world, player, daytime, weather, sound)
 	place_bus()
+	hud.mark("jobs")
 	jobs = Node.new()
 	jobs.name = "Jobs"
 	jobs.set_script(JobsScript)
 	add_child(jobs)
 	jobs.setup(self)
+	hud.mark("indoors")
 	indoors = Node.new()
 	indoors.name = "Indoors"
 	indoors.set_script(IndoorsScript)
 	add_child(indoors)
 	indoors.setup(self)
+	hud.mark("")
+	hud.print_load()
 	# back where the game was left (not in a check, which starts from the same place every time)
 	var was: Array = JobsScript.last_place()
 	if OS.get_cmdline_user_args().is_empty() and was.size() == 2:
@@ -441,6 +460,32 @@ func _setup_environment() -> void:
 	_sun = sun
 
 
+## How fine the picture is drawn (the menu's "Picture"; `--quality=N` in a check):
+##   0 light: for a weaker machine. Three quarters of the size and sharpened up (FSR), edges smoothed afterwards,
+##     no shading in the corners.
+##   1 normal: edges smoothed with two samples a point (MSAA 2x).
+##   2 fine: four samples a point. On a 4K screen the two cannot be told apart (the same picture differs in under
+##     one point in a hundred, by a shade); the four cost 0.9 ms of a 5.3 ms frame and 270 MB of graphics memory.
+var quality := 1
+
+
+func set_quality(q: int) -> void:
+	quality = clampi(q, 0, 2)
+	var vp := get_viewport()
+	vp.msaa_3d = [Viewport.MSAA_DISABLED, Viewport.MSAA_2X, Viewport.MSAA_4X][quality]
+	vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA if quality == 0 else Viewport.SCREEN_SPACE_AA_DISABLED
+	vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_FSR if quality == 0 else Viewport.SCALING_3D_MODE_BILINEAR
+	vp.scaling_3d_scale = 0.75 if quality == 0 else 1.0
+	_env.ssao_enabled = quality > 0
+
+
+func _quality_arg() -> String:
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--quality="):
+			return a.substr(10)
+	return "1"
+
+
 ## `./run.sh -- --molde`: the things the town is known by. Reports the rose beds, the signs and whether the
 ## festival is on, and saves a picture of each sign and of the square (data/molde_*.png). With --date=198 the
 ## square is dressed for Moldejazz.
@@ -638,7 +683,7 @@ func _models_shot_and_quit() -> void:
 		var m: Dictionary = traffic._models[i]
 		var tris := 0
 		for q in (m["body"] as ArrayMesh).get_surface_count():
-			tris += (m["body"] as ArrayMesh).surface_get_arrays(q)[Mesh.ARRAY_VERTEX].size() / 3
+			tris += (m["body"] as ArrayMesh).surface_get_arrays(q)[Mesh.ARRAY_INDEX].size() / 3
 		var wt := 0
 		for q in (m["wheel"] as ArrayMesh).get_surface_count():
 			wt += (m["wheel"] as ArrayMesh).surface_get_arrays(q)[Mesh.ARRAY_VERTEX].size() / 3

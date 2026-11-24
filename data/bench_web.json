@@ -1,0 +1,169 @@
+{
+  "loading_s": {
+    "aeroplanes": 0.01,
+    "all": 11.09,
+    "backdrop": 0.01,
+    "buildings": 0.94,
+    "daytime": 0.02,
+    "detail (paving, fronts)": 0.5,
+    "engine and first frame": 0.98,
+    "grass": 0.0,
+    "indoors": 0.0,
+    "jobs": 0.01,
+    "landmarks": 0.4,
+    "map files": 0.05,
+    "menu": 0.01,
+    "molde": 0.87,
+    "people": 0.03,
+    "player": 0.35,
+    "player and vehicles": 0.0,
+    "props": 0.31,
+    "props: name plates": 0.0,
+    "props: put out": 0.11,
+    "props: road signs": 0.59,
+    "props: seated on the ground": 1.55,
+    "ripples": 0.0,
+    "rivers": 0.07,
+    "sound": 0.01,
+    "streets": 0.01,
+    "terrain": 0.61,
+    "the town round the start": 0.24,
+    "traffic": 2.37,
+    "trees": 0.25,
+    "vehicles": 0.76,
+    "water": 0.0,
+    "weather": 0.01,
+    "world": 0.01
+  },
+  "picture": "3810 x 2098",
+  "renderer": "forward_plus",
+  "route_m": 3698.0,
+  "runs": {
+    "12:00": {
+      "draw_cpu_ms": 1.63,
+      "frames": 28023,
+      "frames_ahead_of_the_map": 0,
+      "frames_over_20ms": 2,
+      "frames_over_8_3ms": 6,
+      "graphics_card_ms": 2.88,
+      "graphics_memory_mb": 1465,
+      "max_ms": 180.82,
+      "mean_draw_calls": 2315,
+      "mean_ms": 3.31,
+      "mean_objects": 2972,
+      "mean_triangles": 5380697,
+      "median_ms": 3.04,
+      "memory_mb": 857,
+      "nodes": 20335,
+      "p99_ms": 5.47,
+      "physics_ms": 0.52,
+      "process_ms": 7.52,
+      "scripts_ms": {
+        "cell_finish": 0.006,
+        "cells": 0.032,
+        "grass": 0.378,
+        "ground": 0.007,
+        "people": 0.03,
+        "sound": 0.019,
+        "t_boats": 0.017,
+        "t_buses": 0.049,
+        "t_draw": 0.283,
+        "t_drive": 0.344,
+        "traffic": 0.717,
+        "weather": 0.006
+      },
+      "share_over_8_3ms": 0.0002,
+      "texture_memory_mb": 1159,
+      "worst": [
+        {
+          "draw_calls": 2972,
+          "in": {
+            "grass": 1.3,
+            "people": 1.1
+          },
+          "ms": 180.82,
+          "street": "Parkvegen",
+          "x": -553.0,
+          "z": 109.0
+        },
+        {
+          "draw_calls": 3321,
+          "in": {
+            "grass": 1.3
+          },
+          "ms": 14.29,
+          "street": "Kirkebakken",
+          "x": -34.0,
+          "z": 8.0
+        },
+        {
+          "draw_calls": 3281,
+          "in": {
+            "cells": 3.0
+          },
+          "ms": 9.05,
+          "street": "Myrabakken",
+          "x": -158.0,
+          "z": 49.0
+        },
+        {
+          "draw_calls": 2360,
+          "in": {},
+          "ms": 8.26,
+          "street": "Fannestrandvegen",
+          "x": 940.0,
+          "z": -50.0
+        },
+        {
+          "draw_calls": 2834,
+          "in": {},
+          "ms": 7.78,
+          "street": "Storgata",
+          "x": 27.0,
+          "z": -9.0
+        },
+        {
+          "draw_calls": 2385,
+          "in": {},
+          "ms": 7.48,
+          "street": "Fannestrandvegen",
+          "x": 825.0,
+          "z": -49.0
+        },
+        {
+          "draw_calls": 3059,
+          "in": {},
+          "ms": 7.44,
+          "street": "Parkvegen",
+          "x": -275.0,
+          "z": -18.0
+        },
+        {
+          "draw_calls": 2074,
+          "in": {},
+          "ms": 7.43,
+          "street": "Strandgata",
+          "x": 514.0,
+          "z": -23.0
+        },
+        {
+          "draw_calls": 2072,
+          "in": {},
+          "ms": 6.94,
+          "street": "Fannestrandvegen",
+          "x": 1354.0,
+          "z": -213.0
+        },
+        {
+          "draw_calls": 2062,
+          "in": {},
+          "ms": 6.86,
+          "street": "Rektor Brinchmanns gate",
+          "x": 226.0,
+          "z": 31.0
+        }
+      ]
+    }
+  },
+  "speed": 40.0
+}

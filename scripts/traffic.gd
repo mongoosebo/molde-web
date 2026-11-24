@@ -35,6 +35,8 @@ var _links := {}                         # Vector2i(road, station number) -> [Ve
 var _models: Array = []               # the car models: {body, wheel (meshes), track, wheel_r, axle_f, axle_r, wb, paints}
 const BusModel := preload("res://scripts/bus.gd")
 const Truck := preload("res://scripts/truck.gd")
+const Lod := preload("res://scripts/lod.gd")
+const Cache := preload("res://scripts/cache.gd")
 var _n_cars := 0                        # how many of _models are cars; the rest are lorries (scripts/truck.gd)
 var _depot: Array = []                   # buses and lorries standing parked: {kind, paint, at, fwd, node, fine}
 var _depot_in := 0.0
@@ -258,6 +260,7 @@ func _run(delta: float) -> void:
 			var fp: Vector3 = (f["node"] as Node3D).position
 			if absf(fp.x - here.x) < 260.0 and absf(fp.z - here.y) < 260.0:
 				walkers.append(Vector2(fp.x, fp.z))
+	var tq_drive := Time.get_ticks_usec()
 	var i := cars.size() - 1
 	while i >= 0:
 		var c: Dictionary = cars[i]
@@ -365,6 +368,8 @@ func _run(delta: float) -> void:
 		c["pos"] = p + fwd * c["v"] * delta
 		c["steer"] = lerpf(c["steer"], clampf(-off, -0.55, 0.55), minf(1.0, 5.0 * delta))
 		i -= 1
+	world.took("t_drive", tq_drive)
+	var tq_draw := Time.get_ticks_usec()
 	# draw them, and make the nearest few solid
 	var near := []
 	var step_ok := delta < 0.05                                 # (the checks below mean nothing over a long frame)
@@ -382,19 +387,25 @@ func _run(delta: float) -> void:
 		c["drawn"] = c["head"]
 		(c["node"] as Node3D).global_transform = xf
 		# the wheels turn with the road covered, and the front ones point the way the car is steering
+		# (only for cars near enough for it to be seen: beyond 120 m a wheel is a few points across, and turning
+		# eight parts of each of thirty cars every frame was a seventh of the traffic's time)
 		var m: Dictionary = _models[c["model"]]
 		c["spin"] += c["v"] * delta / float(m["wheel_r"])
-		var hubs: Array = c["hubs"]
-		for q in 4:
-			(hubs[q][0] as Node3D).rotation.y = c["steer"] if q < 2 else 0.0
-			(hubs[q][1] as Node3D).rotation.y = c["spin"]
-		near.append([Vector3(p2.x, 0, p2.y).distance_squared_to(Vector3(pp.x, 0, pp.z)), xf])
+		var d2 := Vector2(p2.x - pp.x, p2.y - pp.z).length_squared()
+		if d2 < 120.0 * 120.0:
+			var hubs: Array = c["hubs"]
+			for q in 4:
+				(hubs[q][0] as Node3D).rotation.y = c["steer"] if q < 2 else 0.0
+				(hubs[q][1] as Node3D).rotation.y = c["spin"]
+		if d2 < 70.0 * 70.0:
+			near.append([d2, xf])
 	near.sort_custom(func(x, y): return x[0] < y[0])
 	for k in SOLID:
 		if k < near.size() and near[k][0] < 70.0 * 70.0:
 			_bodies[k].global_transform = near[k][1]
 		else:
 			_bodies[k].position = Vector3(0, -500, 0)
+	world.took("t_draw", tq_draw)
 	var tq351 := Time.get_ticks_usec()
 	_run_parked(delta, pp)
 	_run_depot(delta, pp)
@@ -489,22 +500,37 @@ const MID_REACH := 280.0
 const MID_EACH := 96
 
 
+## A car model for afar: its paint (the colour comes with each car) and all the rest as one more surface, both a
+## quarter as fine as the model up close (a parked car beyond 90 m is under a hundred points long on the screen),
+## on plain round wheels. Two draws for every car of the model in sight; it was fourteen, at full fineness.
 func _mid_mesh(m: Dictionary) -> ArrayMesh:
-	var body: ArrayMesh = m["body"]
 	var mesh := ArrayMesh.new()
-	for sf in body.get_surface_count():
-		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, body.surface_get_arrays(sf))
-		var mat: Material = body.surface_get_material(sf)
+	var rest := Lod.Bag.new()
+	for part in Lod.surfaces_at(m["levels"], 0.25):
+		var mat: Material = part[1]
 		if mat is ShaderMaterial and (mat as ShaderMaterial).shader != null and String((mat as ShaderMaterial).shader.resource_path).contains("car_paint"):
 			var paint := StandardMaterial3D.new()                # the paint: the colour of each car, without the door gaps
 			paint.vertex_color_use_as_albedo = true
 			paint.albedo_color = Color.WHITE
 			paint.roughness = 0.32
 			paint.metallic = 0.35
-			mat = paint
-		mesh.surface_set_material(mesh.get_surface_count() - 1, mat)
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+			mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, part[0])
+			mesh.surface_set_material(mesh.get_surface_count() - 1, paint)
+		else:
+			rest.add(part[0], mat)
+	_plain_wheels(m, rest)
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, rest.arrays())
+	if _far_mat == null:
+		_far_mat = ShaderMaterial.new()
+		_far_mat.shader = load("res://shaders/car_far.gdshader")
+	mesh.surface_set_material(mesh.get_surface_count() - 1, _far_mat)
+	return mesh
+
+
+var _far_mat: ShaderMaterial
+
+
+func _plain_wheels(m: Dictionary, into) -> void:
 	var tyre := CylinderMesh.new()
 	tyre.top_radius = m["wheel_r"]
 	tyre.bottom_radius = m["wheel_r"]
@@ -517,42 +543,55 @@ func _mid_mesh(m: Dictionary) -> ArrayMesh:
 	hub.height = 0.225
 	hub.radial_segments = 10
 	hub.rings = 1
-	var st2 := SurfaceTool.new()
-	st2.begin(Mesh.PRIMITIVE_TRIANGLES)
-	for z in [float(m["axle_f"]), float(m["axle_r"])]:
-		for sx in [-float(m["track"]), float(m["track"])]:
-			var xf := Transform3D(Basis(Vector3.BACK, PI * 0.5), Vector3(sx, m["wheel_r"], z))
-			st.append_from(tyre, 0, xf)
-			st2.append_from(hub, 0, xf)
 	var rubber := StandardMaterial3D.new()
 	rubber.albedo_color = Color(0.03, 0.03, 0.03)
 	rubber.roughness = 0.95
-	st.set_material(rubber)
-	st.commit(mesh)
 	var alloy := StandardMaterial3D.new()
 	alloy.albedo_color = Color(0.62, 0.63, 0.65)
 	alloy.roughness = 0.35
 	alloy.metallic = 0.7
-	st2.set_material(alloy)
-	st2.commit(mesh)
+	for z in [float(m["axle_f"]), float(m["axle_r"])]:
+		for sx in [-float(m["track"]), float(m["track"])]:
+			var xf := Transform3D(Basis(Vector3.BACK, PI * 0.5), Vector3(sx, m["wheel_r"], z))
+			into.add(tyre.get_mesh_arrays(), rubber, xf)
+			into.add(hub.get_mesh_arrays(), alloy, xf)
+
+
+## What casts a car's shadow: its body an eighth as fine and four plain wheels, as one surface. The sun's shadows
+## are drawn in up to four steps, and the car's 36 parts were drawn again in each.
+func _shadow_mesh(m: Dictionary) -> ArrayMesh:
+	var all := Lod.Bag.new()
+	for part in Lod.surfaces_at(m["levels"], 0.12):
+		all.add(part[0], null)
+	_plain_wheels(m, all)
+	var arrays := all.arrays()
+	arrays[Mesh.ARRAY_TEX_UV] = null
+	arrays[Mesh.ARRAY_TEX_UV2] = null
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	return mesh
 
 
-func _run_parked_mid(pp: Vector3) -> void:
+func _make_mid() -> void:
 	if _mid.is_empty():
 		for k in _n_cars:
 			var mm := MultiMesh.new()
 			mm.transform_format = MultiMesh.TRANSFORM_3D
 			mm.use_colors = true
-			mm.mesh = _mid_mesh(_models[k])
+			mm.mesh = _models[k]["mid"]
 			mm.instance_count = MID_EACH
 			mm.visible_instance_count = 0
 			var mmi := MultiMeshInstance3D.new()
 			mmi.name = "ParkedMid%d" % k
 			mmi.multimesh = mm
 			mmi.custom_aabb = AABB(Vector3(-1e5, -500, -1e5), Vector3(2e5, 2000, 2e5))      # (its cars move about with the player)
+			mmi.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF           # (they stand still: nothing to smooth between steps, and the engine warned of it a thousand times a run)
 			add_child(mmi)
 			_mid.append(mm)
+
+
+func _run_parked_mid(pp: Vector3) -> void:
+	_make_mid()
 	var used := []
 	used.resize(_n_cars)
 	used.fill(0)
@@ -589,6 +628,14 @@ func _run_parked_mid(pp: Vector3) -> void:
 ## Build each of the twenty models once (scripts/traffic_car.gd): its body and one wheel, to be drawn for every
 ## car of that model on the road.
 func _build_models() -> void:
+	# (building the twenty cars and five lorries and working out their coarser levels takes over two seconds: they
+	# are kept on disk from one run to the next, scripts/cache.gd)
+	var kept := Cache.resource("traffic_models")
+	if kept != null and kept.has_meta("models"):
+		_models = kept.get_meta("models")
+		_n_cars = kept.get_meta("n_cars")
+		_make_mid()
+		return
 	var maker: GDScript = load("res://scripts/traffic_car.gd")
 	for s in maker.MODELS:
 		var car = maker.new()
@@ -603,6 +650,21 @@ func _build_models() -> void:
 	# and a few lorries with two axles, driven the same way (the articulated one only stands parked)
 	for q in [["box", 0], ["box", 1], ["tipper", 0], ["tank", 0], ["box", 2]]:
 		_models.append(Truck.traffic_model(q[0], q[1]))
+	# coarser versions of each, for when it is small on the screen (scripts/lod.gd), and what casts its shadow
+	for m in _models:
+		m["levels"] = Lod.levels(m["body"])
+		m["body"] = Lod.mesh_of(m["levels"])
+		m["wheel"] = Lod.mesh_of(Lod.levels(m["wheel"]))
+		m["shadow"] = _shadow_mesh(m)
+	for k in _n_cars:
+		_models[k]["mid"] = _mid_mesh(_models[k])
+	for m in _models:
+		m.erase("levels")
+	_make_mid()                                                 # (at the start: made when the first parked car came in sight, it took 25 ms of one frame)
+	var keep := Resource.new()
+	keep.set_meta("models", _models)
+	keep.set_meta("n_cars", _n_cars)
+	Cache.keep_resource("traffic_models", keep)
 
 
 ## Put a car on show: its model's body in its own colour, and four wheels that turn and steer.
@@ -612,7 +674,12 @@ func _show(c: Dictionary) -> void:
 	var body := MeshInstance3D.new()
 	body.mesh = m["body"]
 	body.set_instance_shader_parameter("paint", c["col"])
+	body.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	root.add_child(body)
+	var shade := MeshInstance3D.new()
+	shade.mesh = m["shadow"]
+	shade.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
+	root.add_child(shade)
 	var hubs := []
 	for front in [true, false]:
 		for sx in [-float(m["track"]), float(m["track"])]:
@@ -626,6 +693,7 @@ func _show(c: Dictionary) -> void:
 			turn.add_child(roll)
 			var mi := MeshInstance3D.new()
 			mi.mesh = m["wheel"]
+			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			roll.add_child(mi)
 			hubs.append([hub, roll])
 	add_child(root)
@@ -695,6 +763,49 @@ func _setup_depot() -> void:
 		_depot.append({"kind": str(q[0]), "paint": int(q[1]), "at": Vector2(float(q[2]), float(q[3])), "fwd": Vector2(float(q[4]), float(q[5])).normalized(), "fine": false})
 
 
+class DepotMade:
+	var done := false
+	var node: Node3D
+
+
+var _threads := OS.has_feature("threads")
+var _depot_making := false
+
+
+static func _depot_node(kind: String, paint: int) -> Node3D:
+	var node: Node3D
+	if kind == "bus":
+		node = BusModel.make()["node"]
+		var solid := StaticBody3D.new()
+		var shape := CollisionShape3D.new()
+		var bx := BoxShape3D.new()
+		bx.size = Vector3(BusModel.HALF_W * 2.0, BusModel.ROOF - 0.3, BusModel.LEN)
+		shape.shape = bx
+		shape.position = Vector3(0, 0.3 + (BusModel.ROOF - 0.3) * 0.5, 0)
+		solid.add_child(shape)
+		node.add_child(solid)
+	else:
+		node = Truck.make(kind, paint)
+	return node
+
+
+## At the end: a bus or lorry still being built on its thread is waited for and put away. Left alone it belonged
+## to nothing, and the engine stopped with an error on the way out (24 Nov).
+func _exit_tree() -> void:
+	for d in _depot:
+		if d.has("made"):
+			WorkerThreadPool.wait_for_task_completion(d["made_id"])
+			if (d["made"] as DepotMade).node != null:
+				(d["made"] as DepotMade).node.free()
+			d.erase("made")
+			d.erase("made_id")
+
+
+func _depot_task(made: DepotMade, kind: String, paint: int) -> void:
+	made.node = _depot_node(kind, paint)
+	made.done = true
+
+
 func _run_depot(delta: float, pp: Vector3) -> void:
 	_depot_in -= delta
 	if _depot_in > 0.0:
@@ -703,6 +814,14 @@ func _run_depot(delta: float, pp: Vector3) -> void:
 	var here := Vector2(pp.x, pp.z)
 	for d in _depot:
 		var dist: float = (d["at"] as Vector2).distance_to(here)
+		if d.has("made") and (d["made"] as DepotMade).done:         # the one being built on another thread is ready
+			WorkerThreadPool.wait_for_task_completion(d["made_id"])
+			var got: Node3D = (d["made"] as DepotMade).node
+			d.erase("made")
+			d.erase("made_id")
+			_depot_making = false
+			add_child(got)
+			d["node"] = got
 		if dist > 700.0:
 			if d.has("node"):
 				(d["node"] as Node3D).queue_free()
@@ -712,21 +831,17 @@ func _run_depot(delta: float, pp: Vector3) -> void:
 		if dist > 600.0 or (d.has("node") and (d["fine"] or dist > 110.0)):
 			continue
 		if not d.has("node"):
-			var node: Node3D
-			if d["kind"] == "bus":
-				node = BusModel.make()["node"]
-				var solid := StaticBody3D.new()
-				var shape := CollisionShape3D.new()
-				var bx := BoxShape3D.new()
-				bx.size = Vector3(BusModel.HALF_W * 2.0, BusModel.ROOF - 0.3, BusModel.LEN)
-				shape.shape = bx
-				shape.position = Vector3(0, 0.3 + (BusModel.ROOF - 0.3) * 0.5, 0)
-				solid.add_child(shape)
-				node.add_child(solid)
+			# built on another thread, one at a time (building one here took 25 ms of a frame), and stood in when ready
+			if _threads:
+				if not d.has("made") and not _depot_making:
+					_depot_making = true
+					d["made"] = DepotMade.new()
+					d["made_id"] = WorkerThreadPool.add_task(_depot_task.bind(d["made"], d["kind"], d["paint"]))
+				continue
 			else:
-				node = Truck.make(d["kind"], d["paint"])
-			add_child(node)
-			d["node"] = node
+				var node := _depot_node(d["kind"], d["paint"])
+				add_child(node)
+				d["node"] = node
 		var at: Vector2 = d["at"]
 		var fwd: Vector2 = d["fwd"]
 		var half := (BusModel.LEN if d["kind"] == "bus" else float(Truck.KINDS[d["kind"]]["len"])) * 0.4
@@ -919,6 +1034,8 @@ func _run_buses(delta: float, here: Vector2, pp: Vector3) -> void:
 		var to: float = leg[1] if b["back"] else leg[2]
 		var dir := 1 if to >= from else -1
 		var s_way: float = from + b["s"] * dir                      # (b.s is how far along this leg it has come)
+		var ahead := _along(way, s_way + 30.0 * dir)
+		world.detail.index_round((ahead[0] as Vector2).x, (ahead[0] as Vector2).y)
 		var pose := _pose(way, s_way, dir, 1.9)
 		if b.has("blend"):
 			var t: float = smoothstep(0.0, 1.0, b["blend"])

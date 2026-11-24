@@ -1,0 +1,319 @@
+{
+  "as_it_is": {
+    "draw_cpu_ms": 0.79,
+    "frames": 21099,
+    "frames_ahead_of_the_map": 0,
+    "frames_over_20ms": 0,
+    "frames_over_8_3ms": 1,
+    "graphics_card_ms": 4.29,
+    "graphics_memory_mb": 2278,
+    "max_ms": 8.99,
+    "mean_draw_calls": 2168,
+    "mean_ms": 4.38,
+    "mean_objects": 2966,
+    "mean_triangles": 5273439,
+    "median_ms": 4.32,
+    "memory_mb": 956,
+    "nodes": 20372,
+    "p99_ms": 5.45,
+    "physics_ms": 0.48,
+    "process_ms": 5.39,
+    "scripts_ms": {
+      "cell_finish": 0.008,
+      "cells": 0.042,
+      "grass": 0.498,
+      "ground": 0.009,
+      "people": 0.037,
+      "sound": 0.019,
+      "t_boats": 0.016,
+      "t_buses": 0.035,
+      "t_draw": 0.284,
+      "t_drive": 0.345,
+      "traffic": 0.705,
+      "weather": 0.006
+    },
+    "share_over_8_3ms": 0.0,
+    "texture_memory_mb": 1672,
+    "worst": [
+      {
+        "draw_calls": 3054,
+        "in": {
+          "cells": 3.1
+        },
+        "ms": 8.99,
+        "street": "Myrabakken",
+        "x": -158.0,
+        "z": 49.0
+      },
+      {
+        "draw_calls": 2795,
+        "in": {},
+        "ms": 8.11,
+        "street": "Myrabakken",
+        "x": -86.0,
+        "z": 18.0
+      },
+      {
+        "draw_calls": 2248,
+        "in": {},
+        "ms": 7.33,
+        "street": "Fannestrandvegen",
+        "x": 825.0,
+        "z": -49.0
+      },
+      {
+        "draw_calls": 2618,
+        "in": {},
+        "ms": 7.21,
+        "street": "Storgata",
+        "x": 27.0,
+        "z": -9.0
+      },
+      {
+        "draw_calls": 2985,
+        "in": {},
+        "ms": 7.2,
+        "street": "Parkvegen",
+        "x": -274.0,
+        "z": -18.0
+      },
+      {
+        "draw_calls": 2047,
+        "in": {},
+        "ms": 6.98,
+        "street": "Strandgata",
+        "x": 514.0,
+        "z": -23.0
+      },
+      {
+        "draw_calls": 2668,
+        "in": {},
+        "ms": 6.56,
+        "street": "Parkvegen",
+        "x": -534.0,
+        "z": 102.0
+      },
+      {
+        "draw_calls": 2829,
+        "in": {},
+        "ms": 6.53,
+        "street": "Parkvegen",
+        "x": -343.0,
+        "z": 15.0
+      },
+      {
+        "draw_calls": 2138,
+        "in": {},
+        "ms": 6.42,
+        "street": "Rektor Brinchmanns gate",
+        "x": 226.0,
+        "z": 31.0
+      },
+      {
+        "draw_calls": 2190,
+        "in": {},
+        "ms": 6.3,
+        "street": "Fannestrandvegen",
+        "x": 940.0,
+        "z": -50.0
+      }
+    ]
+  },
+  "as_it_is_at_the_end": 4.36,
+  "loading_s": {
+    "aeroplanes": 0.01,
+    "all": 8.81,
+    "backdrop": 0.02,
+    "buildings": 0.93,
+    "daytime": 0.02,
+    "detail (paving, fronts)": 0.53,
+    "engine and first frame": 0.95,
+    "grass": 0.01,
+    "indoors": 0.0,
+    "jobs": 0.01,
+    "landmarks": 0.46,
+    "map files": 0.05,
+    "menu": 0.02,
+    "molde": 1.05,
+    "people": 0.03,
+    "player": 0.35,
+    "player and vehicles": 0.0,
+    "props": 0.43,
+    "props: name plates": 0.0,
+    "props: put out": 0.12,
+    "props: road signs": 0.56,
+    "props: seated on the ground": 0.1,
+    "ripples": 0.0,
+    "rivers": 0.07,
+    "sound": 0.01,
+    "streets": 0.06,
+    "terrain": 0.63,
+    "the town round the start": 0.27,
+    "traffic": 0.81,
+    "trees": 0.27,
+    "vehicles": 0.99,
+    "water": 0.01,
+    "weather": 0.02,
+    "world": 0.0
+  },
+  "picture": "3840 x 2160",
+  "renderer": "forward_plus",
+  "route_m": 3698.0,
+  "speed": 40.0,
+  "without_each": {
+    "backdrop": {
+      "draw_calls": -1,
+      "of_it_drawing_on_the_processor_ms": 0.06,
+      "of_it_graphics_card_ms": 0.1,
+      "saves_ms": 0.11,
+      "triangles": 811224
+    },
+    "buildings": {
+      "draw_calls": 670,
+      "of_it_drawing_on_the_processor_ms": 0.17,
+      "of_it_graphics_card_ms": 0.15,
+      "saves_ms": 0.15,
+      "triangles": 235690
+    },
+    "detail": {
+      "draw_calls": 255,
+      "of_it_drawing_on_the_processor_ms": 0.09,
+      "of_it_graphics_card_ms": 0.22,
+      "saves_ms": 0.22,
+      "triangles": 275287
+    },
+    "fog": {
+      "draw_calls": 17,
+      "of_it_drawing_on_the_processor_ms": 0.06,
+      "of_it_graphics_card_ms": 0.04,
+      "saves_ms": 0.04,
+      "triangles": 4416
+    },
+    "glow": {
+      "draw_calls": 24,
+      "of_it_drawing_on_the_processor_ms": 0.07,
+      "of_it_graphics_card_ms": 0.52,
+      "saves_ms": 0.5,
+      "triangles": -7023
+    },
+    "grass": {
+      "draw_calls": 81,
+      "of_it_drawing_on_the_processor_ms": 0.04,
+      "of_it_graphics_card_ms": 0.07,
+      "saves_ms": 0.08,
+      "triangles": 127409
+    },
+    "ground": {
+      "draw_calls": 29,
+      "of_it_drawing_on_the_processor_ms": 0.08,
+      "of_it_graphics_card_ms": 0.46,
+      "saves_ms": 0.46,
+      "triangles": 426108
+    },
+    "landmarks": {
+      "draw_calls": 174,
+      "of_it_drawing_on_the_processor_ms": 0.07,
+      "of_it_graphics_card_ms": 0.01,
+      "saves_ms": 0.01,
+      "triangles": 55219
+    },
+    "molde": {
+      "draw_calls": 30,
+      "of_it_drawing_on_the_processor_ms": 0.07,
+      "of_it_graphics_card_ms": -0.01,
+      "saves_ms": -0.01,
+      "triangles": 26943
+    },
+    "msaa": {
+      "draw_calls": 12,
+      "of_it_drawing_on_the_processor_ms": 0.06,
+      "of_it_graphics_card_ms": 1.02,
+      "saves_ms": 0.94,
+      "triangles": -10751
+    },
+    "people": {
+      "draw_calls": 87,
+      "of_it_drawing_on_the_processor_ms": 0.04,
+      "of_it_graphics_card_ms": 0.01,
+      "saves_ms": 0.01,
+      "triangles": 60224
+    },
+    "props": {
+      "draw_calls": 158,
+      "of_it_drawing_on_the_processor_ms": 0.07,
+      "of_it_graphics_card_ms": 0.03,
+      "saves_ms": 0.03,
+      "triangles": 281350
+    },
+    "ripples": {
+      "draw_calls": 16,
+      "of_it_drawing_on_the_processor_ms": 0.06,
+      "of_it_graphics_card_ms": -0.02,
+      "saves_ms": -0.02,
+      "triangles": 12673
+    },
+    "shadows": {
+      "draw_calls": 673,
+      "of_it_drawing_on_the_processor_ms": 0.21,
+      "of_it_graphics_card_ms": 0.36,
+      "saves_ms": 0.36,
+      "triangles": 2028525
+    },
+    "sky": {
+      "draw_calls": 22,
+      "of_it_drawing_on_the_processor_ms": 0.07,
+      "of_it_graphics_card_ms": 0.12,
+      "saves_ms": 0.12,
+      "triangles": 18688
+    },
+    "ssao": {
+      "draw_calls": 27,
+      "of_it_drawing_on_the_processor_ms": 0.1,
+      "of_it_graphics_card_ms": 1.26,
+      "saves_ms": 1.15,
+      "triangles": 14191
+    },
+    "terrain": {
+      "draw_calls": 47,
+      "of_it_drawing_on_the_processor_ms": 0.07,
+      "of_it_graphics_card_ms": 0.11,
+      "saves_ms": 0.11,
+      "triangles": 685753
+    },
+    "traffic": {
+      "draw_calls": 321,
+      "of_it_drawing_on_the_processor_ms": 0.12,
+      "of_it_graphics_card_ms": 0.05,
+      "saves_ms": 0.06,
+      "triangles": 525351
+    },
+    "trees": {
+      "draw_calls": 320,
+      "of_it_drawing_on_the_processor_ms": 0.14,
+      "of_it_graphics_card_ms": 0.26,
+      "saves_ms": 0.26,
+      "triangles": 1605090
+    },
+    "vehicles": {
+      "draw_calls": 81,
+      "of_it_drawing_on_the_processor_ms": 0.08,
+      "of_it_graphics_card_ms": 0.04,
+      "saves_ms": 0.04,
+      "triangles": 90144
+    },
+    "water": {
+      "draw_calls": 31,
+      "of_it_drawing_on_the_processor_ms": 0.06,
+      "of_it_graphics_card_ms": 0.2,
+      "saves_ms": 0.2,
+      "triangles": 110731
+    },
+    "weather": {
+      "draw_calls": -1,
+      "of_it_drawing_on_the_processor_ms": 0.06,
+      "of_it_graphics_card_ms": -0.02,
+      "saves_ms": -0.02,
+      "triangles": -8320
+    }
+  }
+}

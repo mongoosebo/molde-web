@@ -1,6 +1,6 @@
-diff -ruN a/project.godot b/project.godot
---- a/project.godot	2026-11-22 03:38:15.000000000 +0100
-+++ b/project.godot	2026-11-23 09:55:33.454287491 +0100
+diff -ruN -x '*.uid' a/project.godot b/project.godot
+--- a/project.godot	2026-11-24 11:21:26.000000000 +0100
++++ b/project.godot	2026-11-24 11:21:58.000000000 +0100
 @@ -3,7 +3,7 @@
  
  [application]
@@ -13,14 +13,14 @@ diff -ruN a/project.godot b/project.godot
 @@ -21,6 +21,7 @@
  [rendering]
  
- anti_aliasing/quality/msaa_3d=2
+ anti_aliasing/quality/msaa_3d=1
 +renderer/rendering_method.web="gl_compatibility"
  
  [shader_globals]
  
-diff -ruN a/scripts/car.gd b/scripts/car.gd
---- a/scripts/car.gd	2026-11-22 03:38:15.000000000 +0100
-+++ b/scripts/car.gd	2026-11-23 09:55:33.453135963 +0100
+diff -ruN -x '*.uid' a/scripts/car.gd b/scripts/car.gd
+--- a/scripts/car.gd	2026-11-24 11:21:26.000000000 +0100
++++ b/scripts/car.gd	2026-11-24 11:21:42.000000000 +0100
 @@ -38,7 +38,7 @@
  var SCREENS := [Vector2(-0.97, -0.44), Vector2(0.99, 1.47)]     # windscreen and rear window, along the car
  var SIDE_GLASS := Vector2(-0.70, 1.20)
@@ -30,9 +30,9 @@ diff -ruN a/scripts/car.gd b/scripts/car.gd
  var PAINT_SHADER := "res://shaders/car_paint.gdshader"
  var BODY_BOX := Vector3(1.78, 1.25, 4.8)      # for bumping into when parked
  var AERIAL_LEN := 0.95
-diff -ruN a/scripts/detail.gd b/scripts/detail.gd
---- a/scripts/detail.gd	2026-11-22 03:38:15.000000000 +0100
-+++ b/scripts/detail.gd	2026-11-23 09:55:33.453229641 +0100
+diff -ruN -x '*.uid' a/scripts/detail.gd b/scripts/detail.gd
+--- a/scripts/detail.gd	2026-11-24 11:21:26.000000000 +0100
++++ b/scripts/detail.gd	2026-11-24 11:21:42.000000000 +0100
 @@ -1,4 +1,5 @@
  extends Node3D
 +const Paths := preload("res://scripts/paths.gd")
@@ -57,9 +57,9 @@ diff -ruN a/scripts/detail.gd b/scripts/detail.gd
  	var i := 0
  	while i + 6 <= data.size():
  		var key := Vector2i(int(data[i]), int(data[i + 1]))
-diff -ruN a/scripts/facades.gd b/scripts/facades.gd
---- a/scripts/facades.gd	2026-11-22 03:38:15.000000000 +0100
-+++ b/scripts/facades.gd	2026-11-23 09:55:33.453332207 +0100
+diff -ruN -x '*.uid' a/scripts/facades.gd b/scripts/facades.gd
+--- a/scripts/facades.gd	2026-11-24 11:21:26.000000000 +0100
++++ b/scripts/facades.gd	2026-11-24 11:21:42.000000000 +0100
 @@ -3,7 +3,8 @@
  ## corner boards, eaves and proper roofs, generated from each building's real footprint, measured
  ## height and roof shape, and its type on the map. The look is a guess by type, not a survey.
@@ -79,9 +79,9 @@ diff -ruN a/scripts/facades.gd b/scripts/facades.gd
  		m.set_shader_parameter("rough_tex", _tex(tex + "_rough"))
  		m.set_shader_parameter("has_rough", true)
  	return m
-diff -ruN a/scripts/hud.gd b/scripts/hud.gd
---- a/scripts/hud.gd	2026-11-22 03:38:15.000000000 +0100
-+++ b/scripts/hud.gd	2026-11-23 09:55:33.453428080 +0100
+diff -ruN -x '*.uid' a/scripts/hud.gd b/scripts/hud.gd
+--- a/scripts/hud.gd	2026-11-24 11:21:26.000000000 +0100
++++ b/scripts/hud.gd	2026-11-24 11:21:42.000000000 +0100
 @@ -91,6 +91,8 @@
  
  	_help = _label(13, Color(1, 1, 1, 0.6))
@@ -91,9 +91,9 @@ diff -ruN a/scripts/hud.gd b/scripts/hud.gd
  
  	_intro = _label(22, Color(1, 1, 1, 1))
  	_intro.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-diff -ruN a/scripts/landmarks.gd b/scripts/landmarks.gd
---- a/scripts/landmarks.gd	2026-11-22 03:38:15.000000000 +0100
-+++ b/scripts/landmarks.gd	2026-11-23 09:55:33.453561757 +0100
+diff -ruN -x '*.uid' a/scripts/landmarks.gd b/scripts/landmarks.gd
+--- a/scripts/landmarks.gd	2026-11-24 11:21:26.000000000 +0100
++++ b/scripts/landmarks.gd	2026-11-24 11:21:42.000000000 +0100
 @@ -3,7 +3,8 @@
  ## Real footprints from the map; facades are modelled with recessed windows, frames, sills,
  ## shopfronts, roofs and textured materials (textures made by tools/make_textures.py).
@@ -104,9 +104,9 @@ diff -ruN a/scripts/landmarks.gd b/scripts/landmarks.gd
  const Rosepiken := preload("res://scripts/rosepiken.gd")
  
  const SPECS := {
-diff -ruN a/scripts/main.gd b/scripts/main.gd
---- a/scripts/main.gd	2026-11-22 03:38:15.000000000 +0100
-+++ b/scripts/main.gd	2026-11-23 09:55:33.453600290 +0100
+diff -ruN -x '*.uid' a/scripts/main.gd b/scripts/main.gd
+--- a/scripts/main.gd	2026-11-24 11:21:26.000000000 +0100
++++ b/scripts/main.gd	2026-11-24 11:21:58.000000000 +0100
 @@ -11,6 +11,7 @@
  const MercedesScript := preload("res://scripts/mercedes.gd")
  const BikeScript := preload("res://scripts/bike.gd")
@@ -115,9 +115,9 @@ diff -ruN a/scripts/main.gd b/scripts/main.gd
  const ChecksScript := preload("res://scripts/checks.gd")
  const BusDriveScript := preload("res://scripts/bus_drive.gd")
  const JobsScript := preload("res://scripts/jobs.gd")
-@@ -59,6 +60,12 @@
- 	hud.set_loading("")
+@@ -60,6 +61,12 @@
  	_setup_environment()
+ 	set_quality(int(_quality_arg()))
  
 +	if OS.has_feature("web"):          # the page has put the map in /world/ before starting (web/shell.html)
 +		if not FileAccess.file_exists("/world/meta.json"):
@@ -125,10 +125,10 @@ diff -ruN a/scripts/main.gd b/scripts/main.gd
 +			return
 +		Paths.world = "/world/"
 +
+ 	hud.mark("world")
  	world = WorldScript.new()
  	world.name = "World"
- 	add_child(world)
-@@ -205,7 +212,7 @@
+@@ -224,7 +231,7 @@
  		return
  	if "--shot" in OS.get_cmdline_user_args():
  		_screenshot_and_quit()
@@ -137,7 +137,7 @@ diff -ruN a/scripts/main.gd b/scripts/main.gd
  		devtool = DevtoolScript.new()                 # crosshair and notes (right mouse button)
  		add_child(devtool)
  		devtool.start(world, player)
-@@ -357,7 +364,7 @@
+@@ -376,7 +383,7 @@
  	_key("sprint", [KEY_SHIFT])
  	_key("fullscreen", [KEY_F11])
  	_key("interact", [KEY_F])
@@ -146,9 +146,9 @@ diff -ruN a/scripts/main.gd b/scripts/main.gd
  	_key("mute", [KEY_M])
  	_key("weather", [KEY_V])
  	_key("reset", [KEY_F5])
-diff -ruN a/scripts/people.gd b/scripts/people.gd
---- a/scripts/people.gd	2026-11-22 03:38:15.000000000 +0100
-+++ b/scripts/people.gd	2026-11-23 09:55:33.453826265 +0100
+diff -ruN -x '*.uid' a/scripts/people.gd b/scripts/people.gd
+--- a/scripts/people.gd	2026-11-24 11:21:26.000000000 +0100
++++ b/scripts/people.gd	2026-11-24 11:21:42.000000000 +0100
 @@ -9,8 +9,9 @@
  
  const Body := preload("res://scripts/body.gd")
@@ -179,9 +179,9 @@ diff -ruN a/scripts/people.gd b/scripts/people.gd
  		_worker_kinds.append({"spec": spec2, "mats": Body.materials(own2), "tall": [1.0, 0.90, 0.97][i], "sex": spec2["sex"]})
  		_unready.append(_worker_kinds[i])
  
-diff -ruN a/scripts/player.gd b/scripts/player.gd
---- a/scripts/player.gd	2026-11-22 03:38:15.000000000 +0100
-+++ b/scripts/player.gd	2026-11-23 09:55:33.453867771 +0100
+diff -ruN -x '*.uid' a/scripts/player.gd b/scripts/player.gd
+--- a/scripts/player.gd	2026-11-24 11:21:26.000000000 +0100
++++ b/scripts/player.gd	2026-11-24 11:21:42.000000000 +0100
 @@ -130,7 +130,8 @@
  	_arm.add_child(_cam)
  	_cam.make_current()
@@ -201,25 +201,25 @@ diff -ruN a/scripts/player.gd b/scripts/player.gd
  		for mi in _figure.find_children("*", "MeshInstance3D", true, false):
  			if not rig.root.is_ancestor_of(mi):
  				(mi as MeshInstance3D).visible = false
-diff -ruN a/scripts/props.gd b/scripts/props.gd
---- a/scripts/props.gd	2026-11-22 03:38:15.000000000 +0100
-+++ b/scripts/props.gd	2026-11-23 09:55:33.454087992 +0100
+diff -ruN -x '*.uid' a/scripts/props.gd b/scripts/props.gd
+--- a/scripts/props.gd	2026-11-24 11:21:26.000000000 +0100
++++ b/scripts/props.gd	2026-11-24 11:21:58.000000000 +0100
 @@ -1,4 +1,5 @@
  extends Node3D
 +const Paths := preload("res://scripts/paths.gd")
+ const Cache := preload("res://scripts/cache.gd")
  ## Street furniture from world/props.bin (tools/build_map.py): lamps, bus shelters, benches, signs,
  ## parked cars, flagpoles, fences, hedges, walls, pylons and their wires. Each kind is one small model
- ## drawn many times; near the player they are solid as simple boxes (scripts/detail.gd asks for those).
-@@ -66,7 +67,7 @@
- func build(w) -> void:
- 	world = w
+@@ -71,7 +72,7 @@
+ 	_tops_keep = _tops.is_empty()
  	var meshes := _meshes()
+ 	world.get_parent().hud.mark("props: seated on the ground")
 -	var data := FileAccess.get_file_as_bytes("res://world/props.bin").to_float32_array()
 +	var data := FileAccess.get_file_as_bytes(Paths.world + "props.bin").to_float32_array()
  	var groups := {}           # Vector3i(chunk x, chunk z, kind) -> [[Transform3D, Color], ...]
  	var n := data.size() / 8
  	for i in n:
-@@ -222,16 +223,16 @@
+@@ -236,16 +237,16 @@
  ## stands). All the plates and poles of a 320 m square are one mesh; a plate is a square cut from the picture
  ## world/textures/signs.png (tools/sign_faces.py), grey from behind. What a plate says in words is lettered on it.
  func _signs() -> void:
@@ -239,9 +239,9 @@ diff -ruN a/scripts/props.gd b/scripts/props.gd
  	img.generate_mipmaps()
  	var sh := Shader.new()
  	sh.code = """shader_type spatial;
-diff -ruN a/scripts/world.gd b/scripts/world.gd
---- a/scripts/world.gd	2026-11-22 03:38:15.000000000 +0100
-+++ b/scripts/world.gd	2026-11-23 09:55:33.454254825 +0100
+diff -ruN -x '*.uid' a/scripts/world.gd b/scripts/world.gd
+--- a/scripts/world.gd	2026-11-24 11:21:26.000000000 +0100
++++ b/scripts/world.gd	2026-11-24 11:21:42.000000000 +0100
 @@ -2,7 +2,8 @@
  ## Builds Molde from the files in res://world/ (made by tools/build_map.py):
  ## terrain, sea, buildings, trees and street names.

@@ -157,6 +157,11 @@ func update(p: Vector3) -> void:
 				_queue.append([d, k])
 				_index_ahead(k)
 	_queue.sort_custom(func(a, b): return a[0] < b[0])
+	# traffic drives out to 440 m and asks for the road's height there: the index of those cells is made ahead as
+	# well (asked for first by a car, it held a frame up for as much as 19 ms)
+	for dz in range(-5, 6):
+		for dx in range(-5, 6):
+			_index_ahead(Vector2i(c.x + dx, c.y + dz))
 	for k in _cells.keys():
 		if _dist(k, p) > FAR or not _on_fine_ground(k):
 			_drop(k)
@@ -191,11 +196,72 @@ func _process(_delta: float) -> void:
 	world.took("cells", t0)
 
 
+## Is a cell being built or waiting to be? (The grass takes a smaller share of the frame then: scripts/grass.gd.)
+func busy() -> bool:
+	return not _job.is_empty() or not _queue.is_empty()
+
+
 ## Build everything in range right now (loading screen, screenshots).
 func flush(p: Vector3) -> void:
 	_centre = Vector3(1e9, 0, 1e9)
 	update(p)
 	_work(-1)
+
+
+## A cell's heavy single steps are done on other threads, so that no frame waits for one: the fronts and roofs of
+## its buildings (worked out from the map's record of each: nothing else is asked), and the making of the meshes
+## and of the solid shape from the lists of points. The benchmark had frames of 7 to 17 ms from these. What the
+## thread hands back.
+class Made:
+	var done := false
+	var mesh: ArrayMesh
+	var mesh2: ArrayMesh
+	var shape: ConcavePolygonShape3D
+
+
+var _threads := OS.has_feature("threads")
+
+
+## At the end: what is being made on other threads for the cell in hand is waited for, and the cell's own node,
+## not yet in the world, is put away.
+func _exit_tree() -> void:
+	for what in ["fronts", "paving"]:
+		if _job.has(what) and not _job.has(what + "_got"):
+			WorkerThreadPool.wait_for_task_completion(_job[what + "_id"])
+	if _job.has("node") and is_instance_valid(_job["node"]) and not (_job["node"] as Node).is_inside_tree():
+		(_job["node"] as Node).free()
+	_job = {}
+
+
+func _fronts_task(made: Made, recs: Array) -> void:
+	var mb := Facades.MB.new()
+	for rec in recs:
+		fac.build(mb, rec)
+	if not mb.is_empty():
+		made.mesh = fac.commit(mb)
+	made.done = true
+
+
+func _paving_task(made: Made, rb, cv: PackedVector3Array) -> void:
+	if not rb.is_empty():
+		made.mesh2 = fac.commit(rb)
+	if not cv.is_empty():
+		made.shape = ConcavePolygonShape3D.new()
+		made.shape.backface_collision = true
+		made.shape.set_faces(cv)
+	made.done = true
+
+
+## Is the thread's work there? With `wait` (everything is wanted right now) it is waited for.
+func _made(what: String, wait: bool) -> bool:
+	var made: Made = _job[what]
+	if _job.has(what + "_got"):
+		return true
+	if not made.done and not wait:
+		return false
+	WorkerThreadPool.wait_for_task_completion(_job[what + "_id"])
+	_job[what + "_got"] = true
+	return true
 
 
 func _work(budget: int) -> void:
@@ -208,6 +274,9 @@ func _work(budget: int) -> void:
 				return
 			_job_key = _queue.pop_front()[1]
 			_job = {"mb": Facades.MB.new(), "roads": Facades.MB.new(), "cv": PackedVector3Array(), "b": 0, "r": 0, "p": 0, "part": 0}
+			if _threads and not sweep and buildings.has(_job_key):
+				_job["fronts"] = Made.new()
+				_job["fronts_id"] = WorkerThreadPool.add_task(_fronts_task.bind(_job["fronts"], buildings[_job_key]))
 		var recs: Array = buildings.get(_job_key, [])
 		var segs: PackedInt32Array = road_cells.get(_job_key, PackedInt32Array())
 		var pv: Array = paved.get(_job_key, [])
@@ -233,13 +302,13 @@ func _work(budget: int) -> void:
 			_job["humps"] = true
 			for h in hump_cells.get(_job_key, []):
 				_hump(_job["roads"], _job["cv"], h)
-		while _job["b"] < recs.size() and not sweep:
+		while _job["b"] < recs.size() and not sweep and not _job.has("fronts"):
 			fac.build(_job["mb"], recs[_job["b"]])
 			_job["b"] += 1
 			if budget >= 0 and Time.get_ticks_usec() - t0 > budget:
 				return
-		while not _finish():
-			if budget >= 0 and Time.get_ticks_usec() - t0 > budget:
+		while not _finish(budget < 0):
+			if budget >= 0 and (_job.get("waiting", false) or Time.get_ticks_usec() - t0 > budget):
 				return
 		if budget >= 0 and Time.get_ticks_usec() - t0 > budget:
 			return
@@ -248,16 +317,33 @@ func _work(budget: int) -> void:
 ## The finished cell is put into the world in four steps, one a frame when the frame has no time to spare (all
 ## at once took 5 to 7 ms, which showed as a stutter when driving): the buildings' mesh, the paving's mesh, the
 ## solid shape, and the things that stand in the cell. Returns true when the cell is in.
-func _finish() -> bool:
+func _finish(now := false) -> bool:
 	var t9 := Time.get_ticks_usec()
 	if not _job.has("node"):
 		_job["node"] = Node3D.new()
 		_job["fin"] = 0
 	var node: Node3D = _job["node"]
+	_job["waiting"] = false
+	# with threads: the paving's mesh and the solid shape are started as soon as their points are all there, and
+	# each step below waits (a frame at a time) for what it needs
+	if _threads and not sweep and not _job.has("paving"):
+		_job["paving"] = Made.new()
+		_job["paving_id"] = WorkerThreadPool.add_task(_paving_task.bind(_job["paving"], _job["roads"], _job["cv"]))
+	if _job.has("paving") and int(_job["fin"]) <= 2:
+		var need := "fronts" if int(_job["fin"]) == 0 and _job.has("fronts") else ("paving" if int(_job["fin"]) > 0 else "")
+		if need != "" and not _made(need, now):
+			_job["waiting"] = true
+			return false
 	match int(_job["fin"]):
 		0:
 			var mb: Facades.MB = _job["mb"]
-			if not mb.is_empty():
+			if _job.has("fronts"):
+				if (_job["fronts"] as Made).mesh != null:
+					var mi := MeshInstance3D.new()
+					mi.mesh = (_job["fronts"] as Made).mesh
+					node.add_child(mi)
+					_job["has_b"] = true
+			elif not mb.is_empty():
 				var mi := MeshInstance3D.new()
 				mi.mesh = fac.commit(mb)
 				node.add_child(mi)
@@ -266,7 +352,7 @@ func _finish() -> bool:
 			var rb: Facades.MB = _job["roads"]
 			if not rb.is_empty():
 				var ri := MeshInstance3D.new()
-				ri.mesh = fac.commit(rb)
+				ri.mesh = (_job["paving"] as Made).mesh2 if _job.has("paving") else fac.commit(rb)
 				ri.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 				if sweep:
 					ri.layers = 2
@@ -274,9 +360,10 @@ func _finish() -> bool:
 		2:
 			var cv: PackedVector3Array = _job["cv"]
 			if not cv.is_empty():
-				var shape := ConcavePolygonShape3D.new()
-				shape.backface_collision = true
-				shape.set_faces(cv)
+				var shape: ConcavePolygonShape3D = (_job["paving"] as Made).shape if _job.has("paving") else ConcavePolygonShape3D.new()
+				if not _job.has("paving"):
+					shape.backface_collision = true
+					shape.set_faces(cv)
 				var col := CollisionShape3D.new()
 				col.shape = shape
 				var body := StaticBody3D.new()
@@ -480,6 +567,25 @@ func _index_done(ikey: Vector3i, idx: Dictionary) -> void:
 		_tri_index[ikey] = idx
 
 
+## Asked by what moves far from the player (a bus on its round): the index of the cell it is in and of those round
+## it, made on another thread before it gets there. Without this a bus crossing into a cell nobody had asked about
+## held one frame up for 15 ms, about once in four minutes (the benchmark of 24 Nov).
+func index_round(x: float, z: float) -> void:
+	var c := cell_of(x, z)
+	for dz in range(-1, 2):
+		for dx in range(-1, 2):
+			_index_ahead(Vector2i(c.x + dx, c.y + dz))
+
+
+## When too many are kept: those far from the player go, not all of them (the near ones would have been made
+## again at once, in the middle of a frame).
+func _forget_far() -> void:
+	var c := cell_of(_centre.x, _centre.z)
+	for k in _tri_index.keys():
+		if absi(k.x - c.x) > 6 or absi(k.y - c.y) > 6:
+			_tri_index.erase(k)
+
+
 func _laid_at(x: float, z: float, part: int) -> float:
 	var key := cell_of(x, z)
 	var pv = paved.get(key)
@@ -491,7 +597,7 @@ func _laid_at(x: float, z: float, part: int) -> float:
 	if idx == null:
 		# (not made ahead of time: see _index_ahead. Making it here costs up to 15 ms for a cell full of asphalt.)
 		if _tri_index.size() > 700:
-			_tri_index.clear()
+			_forget_far()
 		idx = _make_index(arr)
 		_tri_index[ikey] = idx
 	var list = idx.get(Vector2i(int(floor(x / 2.5)), int(floor(z / 2.5))))

@@ -1,5 +1,6 @@
 extends Node3D
 const Paths := preload("res://scripts/paths.gd")
+const Cache := preload("res://scripts/cache.gd")
 ## Street furniture from world/props.bin (tools/build_map.py): lamps, bus shelters, benches, signs,
 ## parked cars, flagpoles, fences, hedges, walls, pylons and their wires. Each kind is one small model
 ## drawn many times; near the player they are solid as simple boxes (scripts/detail.gd asks for those).
@@ -66,7 +67,11 @@ func _seg_dist(a: Vector2, b: Vector2, c: Vector2, d: Vector2) -> float:
 
 func build(w) -> void:
 	world = w
+	_tops = Cache.floats("props_tops")
+	_tops_at = 0 if not _tops.is_empty() else -1
+	_tops_keep = _tops.is_empty()
 	var meshes := _meshes()
+	world.get_parent().hud.mark("props: seated on the ground")
 	var data := FileAccess.get_file_as_bytes(Paths.world + "props.bin").to_float32_array()
 	var groups := {}           # Vector3i(chunk x, chunk z, kind) -> [[Transform3D, Color], ...]
 	var n := data.size() / 8
@@ -145,6 +150,7 @@ func build(w) -> void:
 			cells[ck].append([kind, xf])
 	# street-name signs: a plate cut to the length of each name, lettered on both sides. The street you
 	# are on runs along its own plate; the plate for the street you are coming to hangs across, under it.
+	world.get_parent().hud.mark("props: name plates")
 	var plate := BoxMesh.new()
 	plate.size = Vector3(1.0, 0.24, 0.03)
 	var plate_mat := StandardMaterial3D.new()
@@ -155,6 +161,7 @@ func build(w) -> void:
 		var at := Transform3D(Basis(Vector3.UP, sign[3]), Vector3(sign[0], sign[1], sign[2]))
 		_name_plate(plate, sign[4], at * Transform3D(Basis(Vector3.UP, PI * 0.5), Vector3(0, 2.68, 0)))
 		_name_plate(plate, sign[5], at * Transform3D(Basis(), Vector3(0, 2.40, 0)))
+	world.get_parent().hud.mark("props: road signs")
 	_signs()
 	if not plinths.is_empty():
 		# the concrete a shelter or a set of swings stands on where the ground slopes under it
@@ -173,6 +180,7 @@ func build(w) -> void:
 		pmi.multimesh = pm
 		pmi.visibility_range_end = RANGE
 		add_child(pmi)
+	world.get_parent().hud.mark("props: put out")
 	for gk in groups:
 		var list: Array = groups[gk]
 		var origin := Vector3((gk.x + 0.5) * CHUNK, 0.0, (gk.y + 0.5) * CHUNK)
@@ -197,6 +205,7 @@ func build(w) -> void:
 		var mmi := MultiMeshInstance3D.new()
 		mmi.multimesh = mm
 		mmi.position = origin
+		mmi.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF           # (nothing here moves between physics steps)
 		mmi.visibility_range_end = 4000.0 if gk.z in [FERRY, AIRLINER, CRUISE] else (1400.0 if gk.z in [PYLON, WIRES, BOAT] else RANGE)
 		mmi.visibility_range_end_margin = 40.0
 		if gk.z >= BOAT_KINDS:
@@ -217,6 +226,11 @@ func build(w) -> void:
 		if gk.z in [WIRES, FENCE, PICKET, GUARD_RAIL]:
 			mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(mmi)
+	if _tops_keep:
+		Cache.keep_floats("props_tops", _tops)
+	_tops_keep = false
+	_tops_at = -1
+	_tops = PackedFloat32Array()
 
 
 ## The road signs of world/signs.json (tools/build_map.py: the signs of the national road database, each where it
@@ -409,6 +423,26 @@ func solid(parent: Node3D, key: Vector2i) -> void:
 # ------------------------------------------------------------------ models
 ## The top of what is seen at a point: the paving where there is some (asphalt, slabs), else the ground.
 func _top(x: float, z: float) -> float:
+	# (asked some 30 000 times while the props are put out, for places all over the town: reading the ground for
+	# them took 1.5 s of the start. The answers come in the same order every time, so they are kept from one run
+	# to the next: scripts/cache.gd.)
+	if _tops_at >= 0:
+		if _tops_at < _tops.size():
+			_tops_at += 1
+			return _tops[_tops_at - 1]
+		_tops_at = -1                                   # (more asked than were kept: the rest are worked out)
+	var y := _top_now(x, z)
+	if _tops_keep:
+		_tops.append(y)
+	return y
+
+
+var _tops := PackedFloat32Array()
+var _tops_at := -1                       # where in the kept answers the next one is; -1: not reading from them
+var _tops_keep := false
+
+
+func _top_now(x: float, z: float) -> float:
 	if world.detail != null:
 		var t: float = world.detail.top_at(x, z)
 		if not is_nan(t):

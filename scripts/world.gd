@@ -227,19 +227,26 @@ func to_latlon(x: float, z: float) -> Vector2:
 func build(hud) -> void:
 	hud.set_loading("Reading the map…")
 	await get_tree().process_frame
+	hud.mark("map files")
 	_load_meta()
 	hud.set_loading("Raising the terrain…")
 	await get_tree().process_frame
+	hud.mark("terrain")
 	_build_terrain()
+	hud.mark("water")
 	_build_water()
+	hud.mark("backdrop")
 	_build_backdrop()
+	hud.mark("rivers")
 	_build_rivers()
 	_load_water_grid()
+	hud.mark("ripples")
 	ripples = Node.new()
 	ripples.name = "Ripples"
 	ripples.set_script(load("res://scripts/ripples.gd"))
 	add_child(ripples)
 	ripples.setup(self)
+	hud.mark("detail (paving, fronts)")
 	detail = Node3D.new()
 	detail.name = "Detail"
 	detail.set_script(load("res://scripts/detail.gd"))
@@ -247,7 +254,9 @@ func build(hud) -> void:
 	detail.setup(self)
 	hud.set_loading("Building the town…")
 	await get_tree().process_frame
+	hud.mark("buildings")
 	_build_buildings()
+	hud.mark("landmarks")
 	var lm := Node3D.new()
 	lm.name = "Landmarks"
 	lm.set_script(load("res://scripts/monuments.gd"))
@@ -255,7 +264,9 @@ func build(hud) -> void:
 	lm.build_all(self, meta)
 	hud.set_loading("Planting Moldemarka…")
 	await get_tree().process_frame
+	hud.mark("trees")
 	await _build_trees()
+	hud.mark("props")
 	props = Node3D.new()
 	props.name = "Props"
 	props.set_script(load("res://scripts/props.gd"))
@@ -263,6 +274,7 @@ func build(hud) -> void:
 	props.build(self)
 	hud.set_loading("Finishing the streets…")
 	await get_tree().process_frame
+	hud.mark("streets")
 	_build_wrecks()
 	_build_fires()
 	_build_streets()
@@ -318,11 +330,6 @@ func _build_terrain() -> void:
 	var mtex := ImageTexture.create_from_image(mimg)
 
 	var size := Vector2(x1 - x0, z1 - z0)
-	var plane := PlaneMesh.new()
-	plane.size = size
-	plane.subdivide_width = gw - 2
-	plane.subdivide_depth = gh - 2
-
 	var mat := ShaderMaterial.new()
 	mat.shader = load("res://shaders/terrain.gdshader")
 	mat.set_shader_parameter("height_tex", htex)
@@ -355,15 +362,31 @@ func _build_terrain() -> void:
 		m.set_shader_parameter("world_origin", Vector2(x0, z0))
 		m.set_shader_parameter("world_size", size)
 
-	var mi := MeshInstance3D.new()
-	mi.name = "Terrain"
-	mi.layers = 3                                 # layer 2: what the road sweep's camera sees (ground and paving)
-	mi.mesh = plane
-	mi.material_override = mat
-	mi.position = Vector3((x0 + x1) * 0.5, 0.0, (z0 + z1) * 0.5)
-	mi.custom_aabb = AABB(Vector3(-size.x * 0.5, -40.0, -size.y * 0.5), Vector3(size.x, 760.0, size.y))
-	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	add_child(mi)
+	# The far ground is one grid of 1.7 million triangles. As a single mesh all of it was sent to the graphics card
+	# every frame, behind the camera as well; cut into 12 x 8 tiles, only those in view are. Each tile reaches one
+	# square into its neighbours to the east and south, so that no hairline shows between them.
+	var terrain := Node3D.new()
+	terrain.name = "Terrain"
+	terrain.position = Vector3((x0 + x1) * 0.5, 0.0, (z0 + z1) * 0.5)
+	add_child(terrain)
+	var qw := size.x / float(gw - 1)
+	var qd := size.y / float(gh - 1)
+	for tz in 8:
+		for tx in 12:
+			var qa := Vector2i(tx * (gw - 1) / 12, tz * (gh - 1) / 8)
+			var qb := Vector2i(mini((tx + 1) * (gw - 1) / 12 + 1, gw - 1), mini((tz + 1) * (gh - 1) / 8 + 1, gh - 1))
+			var plane := PlaneMesh.new()
+			plane.size = Vector2(float(qb.x - qa.x) * qw, float(qb.y - qa.y) * qd)
+			plane.subdivide_width = qb.x - qa.x - 1
+			plane.subdivide_depth = qb.y - qa.y - 1
+			plane.center_offset = Vector3(-size.x * 0.5 + float(qa.x + qb.x) * 0.5 * qw, 0.0, -size.y * 0.5 + float(qa.y + qb.y) * 0.5 * qd)
+			var mi := MeshInstance3D.new()
+			mi.layers = 3                             # layer 2: what the road sweep's camera sees (ground and paving)
+			mi.mesh = plane
+			mi.material_override = mat
+			mi.custom_aabb = AABB(plane.center_offset - Vector3(plane.size.x * 0.5, 40.0, plane.size.y * 0.5), Vector3(plane.size.x, 760.0, plane.size.y))
+			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			terrain.add_child(mi)
 
 	_near_root = Node3D.new()
 	_near_root.name = "TerrainNear"

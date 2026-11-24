@@ -27,6 +27,8 @@ var haze := 1.0                          # from the weather: how thick the air i
 var gloom := 0.0                         # from the weather: how much light the cloud takes, 0 to 1
 var cloud := 0.0                          # from the weather: how far cloud has come down on the hills, 0 to 1
 
+var no_shadows := false                  # the benchmark's price list: the sun casts none
+
 var _env: Environment
 var _sky: ProceduralSkyMaterial
 var _sun: DirectionalLight3D
@@ -230,7 +232,7 @@ func apply() -> void:
 	_sky.sky_cover_modulate = Color(1, 1, 1, clampf(night * 1.4 - 0.4, 0.0, 1.0) * (1.0 - cover))
 	_sun.light_color = sun_col
 	_sun.light_energy = sun_e
-	_sun.shadow_enabled = sun_e > 0.03
+	_sun.shadow_enabled = sun_e > 0.03 and not no_shadows
 	# the moon stands across the sky from the sun, a quarter up, when the sun is down
 	_moon.look_at_from_position(_toward(28.0, s.y + 160.0) * 100.0, Vector3.ZERO)
 	_moon.light_energy = 0.22 * night * (1.0 - 0.7 * cover)

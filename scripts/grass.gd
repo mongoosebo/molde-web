@@ -37,6 +37,7 @@ func set_amount(a: int) -> void:
 			if _patches[key] != null:
 				_patches[key].queue_free()
 		_patches.clear()
+		_growing = {}
 		_at = Vector2i(-99999, -99999)
 		tufts = 0
 
@@ -100,24 +101,45 @@ func _run(_delta: float) -> void:
 				if dx * dx + dz * dz <= (REACH + 0.5) * (REACH + 0.5) and not _patches.has(key):
 					_queue.append([dx * dx + dz * dz, key])
 		_queue.sort_custom(func(a, b): return a[0] < b[0])
+	# A patch is filled a row of tufts at a time, and the work stops when the frame's share is used: a whole patch
+	# at once took up to 3.5 ms, which with a map cell being built in the same frame made a slow one. When the
+	# map is at work as well (scripts/detail.gd) the grass takes less.
 	var t0 := Time.get_ticks_usec()
-	while not _queue.is_empty() and Time.get_ticks_usec() - t0 < 1500:
-		var key: Vector2i = _queue.pop_front()[1]
-		if not _patches.has(key):
-			_patches[key] = _grow(key)
+	var share := 600 if world.detail.busy() else 1300
+	while Time.get_ticks_usec() - t0 < share:
+		if _growing.is_empty():
+			if _queue.is_empty():
+				break
+			var key: Vector2i = _queue.pop_front()[1]
+			if _patches.has(key):
+				continue
+			var rng := RandomNumberGenerator.new()
+			rng.seed = hash(key)
+			var step := 0.36 if amount == 2 else 0.8             # (the forest floor stays thin: see below)
+			_growing = {"key": key, "rng": rng, "step": step, "x": key.x * PATCH + step * 0.5, "xf": [], "cols": PackedColorArray()}
+		if _grow_rows(t0 + share):
+			_patches[_growing["key"]] = _grown()
+			_growing = {}
 
 
-## Fill one patch. Returns its MultiMeshInstance3D, or null where nothing grows.
-func _grow(key: Vector2i) -> MultiMeshInstance3D:
-	var rng := RandomNumberGenerator.new()
-	rng.seed = hash(key)
-	var step := 0.36 if amount == 2 else 0.8                 # (the forest floor stays thin: see below)
+var _growing := {}                       # the patch being filled: where, how far it has come, the tufts so far
+
+
+## Fill more rows of the patch being filled, until `until` (microseconds) or it is full. Returns true when full.
+func _grow_rows(until: int) -> bool:
+	var key: Vector2i = _growing["key"]
+	var rng: RandomNumberGenerator = _growing["rng"]
+	var step: float = _growing["step"]
 	var x_at := key.x * PATCH
 	var z_at := key.y * PATCH
-	var xf: Array = []
-	var cols := PackedColorArray()
-	var x := x_at + step * 0.5
+	var xf: Array = _growing["xf"]
+	var cols: PackedColorArray = _growing["cols"]
+	var x: float = _growing["x"]
 	while x < x_at + PATCH:
+		if Time.get_ticks_usec() > until:
+			_growing["x"] = x
+			_growing["cols"] = cols
+			return false
 		var z := z_at + step * 0.5
 		while z < z_at + PATCH:
 			var px := x + rng.randf_range(-0.3, 0.3) * step
@@ -173,6 +195,18 @@ func _grow(key: Vector2i) -> MultiMeshInstance3D:
 			xf.append(Transform3D(b, Vector3(px - x_at - PATCH * 0.5, y - 0.02, pz - z_at - PATCH * 0.5)))
 			cols.append(col)
 		x += step
+	_growing["x"] = x
+	_growing["cols"] = cols
+	return true
+
+
+## The filled patch as its MultiMeshInstance3D, or null where nothing grows.
+func _grown() -> MultiMeshInstance3D:
+	var key: Vector2i = _growing["key"]
+	var x_at := key.x * PATCH
+	var z_at := key.y * PATCH
+	var xf: Array = _growing["xf"]
+	var cols: PackedColorArray = _growing["cols"]
 	if xf.is_empty():
 		return null
 	var mm := MultiMesh.new()
